@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RF Tug of War</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main id="lobby" class="lobby">
+    <section class="lobby-panel">
+      <p class="eyebrow">RF Tug of War</p>
+      <h1>Choose your RF battle</h1>
+      <p class="lobby-copy">Configure your data carrier and data receive modem during prep, then use the spectrum analyzer to find the opposing transponder and build interference signals. First file to complete wins.</p>
+      <div class="mode-picker" role="group" aria-label="Game mode">
+        <button id="soloMode" class="mode-option active" type="button" aria-pressed="true">
+          <strong>Solo</strong>
+          <span>Play the original game against the AI opponent.</span>
+        </button>
+        <button id="multiMode" class="mode-option" type="button" aria-pressed="false">
+          <strong>Two Players</strong>
+          <span>Share this station and switch between Player 1 and Player 2.</span>
+        </button>
+      </div>
+      <div class="phase-list">
+        <div><strong>Prep</strong><span>Five minutes to pick your data modem and set your own 36 MHz transponder plan.</span></div>
+        <div><strong>Battle</strong><span>The analyzer can expand to the full 80 MHz view. The chosen data modem stays selected, but the data RX must be retuned after carrier or format changes.</span></div>
+        <div><strong>Scoring</strong><span>An 8 Gb pseudo file advances only while the data RX is locked. Eb/No, FEC loss, and receiver tuning control progress.</span></div>
+      </div>
+      <label id="difficultyPicker" class="difficulty-picker">AI Difficulty
+        <select id="difficulty">
+          <option value="easy">Easy</option>
+          <option value="medium" selected>Medium</option>
+          <option value="hard">Hard</option>
+        </select>
+      </label>
+      <div class="lobby-actions">
+        <button id="localStart" class="join join-alpha" type="button">Start Game</button>
+      </div>
+    </section>
+  </main>
+
+  <div id="game" class="game-shell" hidden>
+    <header class="topbar">
+      <div class="brand-block">
+        <div class="eyebrow">RF Tug of War</div>
+        <h1 id="playerTitle">Player</h1>
+      </div>
+      <div class="round-strip">
+        <div class="round-cell">
+          <span>Phase</span>
+          <strong id="phaseReadout">Prep</strong>
+        </div>
+        <div class="round-cell">
+          <span>Timer</span>
+          <strong id="timerReadout">02:00</strong>
+        </div>
+        <div class="round-cell wide">
+          <span>Data Link</span>
+          <strong id="linkReadout">Standby</strong>
+        </div>
+      </div>
+      <div class="top-actions">
+        <div id="playerSwitch" class="player-switch" hidden>
+          <button id="switchAlpha" type="button" aria-pressed="true">Player 1</button>
+          <button id="switchBravo" type="button" aria-pressed="false">Player 2</button>
+        </div>
+        <button id="readyPhase" class="reset-button">Ready</button>
+        <button id="resetRound" class="reset-button">New Round</button>
+      </div>
+    </header>
+
+    <section class="scoreboard" aria-label="Round progress">
+      <div class="score-row" id="scoreAlpha">
+        <div class="score-label">
+          <strong>Player</strong>
+          <span id="alphaStatus">Standby</span>
+        </div>
+        <div class="bar-track"><div class="bar-fill"></div></div>
+        <span class="score-percent">0%</span>
+      </div>
+      <div class="score-row" id="scoreBravo">
+        <div class="score-label">
+          <strong>AI Opponent</strong>
+          <span id="bravoStatus">Standby</span>
+        </div>
+        <div class="bar-track"><div class="bar-fill"></div></div>
+        <span class="score-percent">0%</span>
+      </div>
+    </section>
+
+    <main class="workspace">
+      <aside class="analyzer-controls">
+        <div class="panel-title">Analyzer</div>
+        <div class="control">
+          <label for="centerFreq">Center MHz</label>
+          <input id="centerFreq" type="number" step="0.1" value="2258" />
+        </div>
+        <div class="control">
+          <label for="span">Span MHz</label>
+          <input id="span" type="number" min="1" max="120" step="0.5" value="42" />
+        </div>
+        <div class="control">
+          <label for="refLevel">Reference dBm</label>
+          <input id="refLevel" type="number" step="1" value="-48" />
+        </div>
+        <div class="control">
+          <label for="dbPerDiv">Scale</label>
+          <select id="dbPerDiv">
+            <option value="3">3 dB/div</option>
+            <option value="5">5 dB/div</option>
+            <option value="8" selected>8 dB/div</option>
+            <option value="10">10 dB/div</option>
+          </select>
+        </div>
+        <div class="control">
+          <label for="rbw">RBW</label>
+          <select id="rbw">
+            <option value="0.001">1 kHz</option>
+            <option value="0.003">3 kHz</option>
+            <option value="0.01">10 kHz</option>
+            <option value="0.03">30 kHz</option>
+            <option value="0.1" selected>100 kHz</option>
+            <option value="0.3">300 kHz</option>
+            <option value="1">1 MHz</option>
+          </select>
+        </div>
+        <div class="control">
+          <label for="vbw">VBW</label>
+          <select id="vbw">
+            <option value="0.0001">100 Hz</option>
+            <option value="0.001">1 kHz</option>
+            <option value="0.003">3 kHz</option>
+            <option value="0.01">10 kHz</option>
+            <option value="0.03">30 kHz</option>
+            <option value="0.1" selected>100 kHz</option>
+            <option value="0.3">300 kHz</option>
+            <option value="1">1 MHz</option>
+          </select>
+        </div>
+        <div class="control">
+          <label for="sweepTime">Sweep</label>
+          <select id="sweepTime">
+            <option value="auto" selected>Auto</option>
+            <option value="0.02">20 ms</option>
+            <option value="0.05">50 ms</option>
+            <option value="0.1">100 ms</option>
+            <option value="0.25">250 ms</option>
+            <option value="0.5">500 ms</option>
+            <option value="1">1 s</option>
+            <option value="2">2 s</option>
+          </select>
+        </div>
+        <div class="control">
+          <label for="detector">Detector</label>
+          <select id="detector">
+            <option value="rms" selected>RMS</option>
+            <option value="sample">Sample</option>
+            <option value="positive">Peak +</option>
+            <option value="negative">Peak -</option>
+          </select>
+        </div>
+        <div class="control">
+          <label for="fftPoints">FFT</label>
+          <select id="fftPoints">
+            <option value="4096">4k</option>
+            <option value="8192">8k</option>
+            <option value="16384" selected>16k</option>
+            <option value="32768">32k</option>
+            <option value="65536">65k</option>
+          </select>
+        </div>
+        <div class="control">
+          <label for="noiseFloor">Noise dBm</label>
+          <input id="noiseFloor" type="number" step="1" value="-94" />
+        </div>
+        <div class="control">
+          <label for="averaging">Averaging</label>
+          <div class="range-wrap">
+            <input id="averaging" type="range" min="0" max="0.96" step="0.02" value="0.24" />
+            <span id="avgVal">24%</span>
+          </div>
+        </div>
+
+        <div class="panel-title top-gap">Display</div>
+        <label class="checkrow"><input id="showWaterfall" type="checkbox" checked /> Waterfall</label>
+        <label class="checkrow"><input id="showGrid" type="checkbox" checked /> Grid</label>
+        <div class="trace-toggles">
+          <label class="checkrow"><input id="traceClear" type="checkbox" checked /> Clear Write</label>
+          <label class="checkrow"><input id="traceAverage" type="checkbox" /> Average</label>
+          <label class="checkrow"><input id="traceMax" type="checkbox" /> Max Hold</label>
+          <label class="checkrow"><input id="traceMin" type="checkbox" /> Min Hold</label>
+        </div>
+
+        <div class="button-grid">
+          <button id="peakSearch" type="button">Peak</button>
+          <button id="clearPeak" type="button">Clear Peak</button>
+          <button id="setM1" type="button">M1</button>
+          <button id="setM2" type="button">M2</button>
+          <button id="setM3" type="button">M3</button>
+          <button id="clearMarkers" type="button">Clear M</button>
+        </div>
+
+        <div class="marker-table">
+          <div><span>RET</span><strong id="retRead">-</strong></div>
+          <div><span>M1</span><strong id="m1Read">-</strong></div>
+          <div><span>M2</span><strong id="m2Read">-</strong></div>
+          <div><span>M3</span><strong id="m3Read">-</strong></div>
+          <div><span>DELTA</span><strong id="deltaRead">-</strong></div>
+          <div><span>3 dB BW</span><strong id="bw3dbRead">-</strong></div>
+          <div><span>SNR</span><strong id="snrRead">-</strong></div>
+        </div>
+      </aside>
+
+      <section class="display-panel">
+        <div class="instrument-top">
+          <div class="readouts">
+            <div class="readout"><span>View</span><strong id="viewReadout">-</strong></div>
+            <div class="readout"><span>Reticle</span><strong id="reticleReadout">-</strong></div>
+            <div class="readout"><span>Peak</span><strong id="peakReadout">-</strong></div>
+            <div class="readout"><span>Eb/No</span><strong id="ebnoReadout">-</strong></div>
+            <div class="readout"><span>C/N0</span><strong id="cn0Readout">-</strong></div>
+            <div class="readout"><span>MER / EVM</span><strong id="merReadout">-</strong></div>
+            <div class="readout"><span>I/N</span><strong id="interferenceReadout">-</strong></div>
+            <div class="readout"><span>File RX</span><strong id="fileReadout">-</strong></div>
+            <div class="readout"><span>Data Loss</span><strong id="lossReadout">-</strong></div>
+            <div class="readout"><span>RBW / VBW</span><strong id="rbwVbwReadout">-</strong></div>
+            <div class="readout"><span>Processing</span><strong id="procReadout">-</strong></div>
+          </div>
+          <div class="band-map" id="bandMap">-</div>
+        </div>
+        <div class="canvas-wrap">
+          <canvas id="spectrumCanvas" width="1280" height="430"></canvas>
+          <canvas id="waterfallCanvas" width="1280" height="160"></canvas>
+        </div>
+        <section class="rx-panel">
+          <div class="rx-panel-head">
+            <h2>Data Receive Modem</h2>
+          </div>
+          <div id="dataRxModem"></div>
+        </section>
+        <section class="rx-panel">
+          <div class="rx-panel-head">
+            <h2>RX Search Modems</h2>
+          </div>
+          <div id="rxModems" class="rx-grid"></div>
+        </section>
+      </section>
+
+      <section class="modems-section">
+        <div class="section-head">
+          <h2>Modems</h2>
+          <div id="lockNotice">Data modem can be changed during prep.</div>
+        </div>
+        <div id="modems" class="modem-grid"></div>
+      </section>
+    </main>
+  </div>
+
+  <div id="iqModal" class="iq-modal" hidden>
+    <section class="iq-card">
+      <canvas id="iqCanvas" width="360" height="300"></canvas>
+      <div class="iq-stats">
+        <div class="panel-title">I/Q Demod</div>
+        <h2 id="iqModalTitle">Modem</h2>
+        <div id="iqReadout">Waiting for data carrier.</div>
+        <button id="closeIq" type="button">Close</button>
+      </div>
+    </section>
+  </div>
+
+  <div id="markerMenu" class="marker-menu" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>
