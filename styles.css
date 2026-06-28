@@ -71,7 +71,7 @@ input:disabled {
 }
 
 .lobby-panel {
-  width: min(620px, 100%);
+  width: min(760px, 100%);
   border: 1px solid var(--line);
   background: var(--panel);
   border-radius: 8px;
@@ -95,7 +95,7 @@ input:disabled {
 
 .mode-picker {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
   margin: 0 0 14px;
 }
@@ -153,7 +153,8 @@ input:disabled {
   line-height: 1.35;
 }
 
-.difficulty-picker {
+.difficulty-picker,
+.speed-picker {
   display: grid;
   grid-template-columns: 1fr 150px;
   gap: 10px;
@@ -161,6 +162,52 @@ input:disabled {
   color: var(--soft);
   font-weight: 800;
   margin: 0 0 14px;
+}
+
+.network-panel {
+  margin: 0 0 14px;
+  border: 1px solid rgba(49, 56, 56, 0.8);
+  background: var(--panel-3);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.network-actions {
+  display: grid;
+  grid-template-columns: 1fr 140px 1fr;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.network-actions .join {
+  min-height: 72px;
+  font-size: 18px;
+}
+
+.room-code {
+  display: grid;
+  align-content: center;
+  gap: 6px;
+  color: var(--soft);
+  font-size: 12px;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.network-status {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.35;
+  margin: 10px 0 0;
+}
+
+.network-status[data-tone="good"] {
+  color: var(--alpha);
+}
+
+.network-status[data-tone="bad"] {
+  color: var(--bad);
 }
 
 .lobby-actions {
@@ -260,8 +307,7 @@ h2 {
 .round-cell span,
 .readout span,
 .score-label span,
-.marker-table span,
-.modem-card .meta span {
+.marker-table span {
   display: block;
   color: var(--muted);
   font-size: 11px;
@@ -432,6 +478,7 @@ h2 {
 }
 
 input[type="number"],
+input[type="text"],
 select {
   width: 100%;
   min-width: 0;
@@ -767,7 +814,7 @@ canvas {
 
 .rx-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   margin-top: 8px;
 }
@@ -900,23 +947,6 @@ canvas {
   color: var(--amber);
 }
 
-.modem-card .meta {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 7px;
-  margin-top: 9px;
-  padding-top: 9px;
-  border-top: 1px solid rgba(49, 56, 56, 0.72);
-}
-
-.modem-card .meta strong {
-  display: block;
-  margin-top: 2px;
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
-}
-
 .jammed #linkReadout,
 .jammed .score-label span {
   color: var(--bad);
@@ -966,9 +996,10 @@ canvas {
   .score-row,
   .control,
   .difficulty-picker,
+  .speed-picker,
   .mode-picker,
+  .network-actions,
   .modem-fields,
-  .modem-card .meta,
   .lobby-actions,
   .iq-card {
     grid-template-columns: 1fr;
