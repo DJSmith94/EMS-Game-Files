@@ -10,12 +10,13 @@
   gameRoot.hidden = true;
 
   const ids = [
-    "localStart", "soloMode", "multiMode", "difficultyPicker", "difficulty", "playerTitle", "phaseReadout", "timerReadout", "linkReadout", "resetRound", "readyPhase",
+    "localStart", "soloMode", "multiMode", "sandboxMode", "difficultyPicker", "difficulty", "speedPicker", "gameSpeed", "speedSummary", "playerTitle", "phaseReadout", "timerReadout", "linkReadout", "resetRound", "readyPhase",
+    "networkPanel", "hostNetwork", "joinNetwork", "roomCode", "networkStatus",
     "playerSwitch", "switchAlpha", "switchBravo",
     "scoreAlpha", "scoreBravo", "alphaStatus", "bravoStatus", "lockNotice",
     "centerFreq", "span", "refLevel", "dbPerDiv",
     "rbw", "vbw", "sweepTime", "detector", "fftPoints", "noiseFloor",
-    "averaging", "avgVal", "showWaterfall", "showGrid", "traceClear", "traceAverage", "traceMax", "traceMin",
+    "averaging", "avgVal", "showWaterfall", "showGrid", "ndbDown", "traceClear", "traceAverage", "traceMax", "traceMin",
     "peakSearch", "clearPeak", "setM1", "setM2", "setM3",
     "clearMarkers", "retRead", "m1Read", "m2Read", "m3Read", "viewReadout",
     "reticleReadout", "peakReadout", "ebnoReadout", "cn0Readout", "merReadout",
@@ -55,6 +56,10 @@
   let initializedView = false;
   let started = false;
   let drawingStarted = false;
+  let networkRole = "offline";
+  let networkSocket = null;
+  let networkRoomId = "";
+  let networkHasStartedView = false;
 
   const WINDOW_PROFILES = {
     blackmanHarris: { label: "BH4", enbw: 2.01, mainLobe: 1.9, sideFloor: 0.000003, scallopDb: 0.82 },
@@ -64,14 +69,28 @@
   };
 
   const PREP_MS = 300_000;
-  const PACKAGE_BITS = 8_000_000_000;
+  const DEFAULT_GAME_SPEED = "normal";
+  const GAME_SPEEDS = {
+    fast: { id: "fast", label: "Fast", fileBits: 500_000_000, fileLabel: "0.5 Gb", battleMs: 300_000 },
+    normal: { id: "normal", label: "Normal", fileBits: 2_000_000_000, fileLabel: "2 Gb", battleMs: 600_000 },
+    slow: { id: "slow", label: "Slow", fileBits: 6_000_000_000, fileLabel: "6 Gb", battleMs: 900_000 }
+  };
   const DATA_TRANSFER_SCALE = 0.45;
-  const SYSTEM_OUTPUT_LIMIT_DBM = -56;
-  const SYSTEM_OCCUPANCY_SOFT_MHZ = 24;
+  const SYSTEM_POWER_PROFILES = {
+    solo: { outputLimitDbm: -56, occupancySoftMHz: 24, modemMinDbm: -80, modemMaxDbm: -45 },
+    multiplayer: { outputLimitDbm: -48, occupancySoftMHz: 64, modemMinDbm: -80, modemMaxDbm: -38 },
+    sandbox: { outputLimitDbm: -34, occupancySoftMHz: 160, modemMinDbm: -90, modemMaxDbm: -30 }
+  };
 
   const TRANSPONDERS = {
-    alpha: { id: "alpha", label: "A", minMHz: 2240, maxMHz: 2276, color: "#65e6ad", awgnDensityDbmHz: -138.5, pedestalRollMHz: 1.2, edgeLiftDb: 1.4 },
-    bravo: { id: "bravo", label: "B", minMHz: 2280, maxMHz: 2316, color: "#ff8f70", awgnDensityDbmHz: -138.5, pedestalRollMHz: 1.2, edgeLiftDb: 1.4 }
+    alpha: { id: "alpha", label: "A", minMHz: 2240, maxMHz: 2276, color: "#65e6ad", awgnDensityDbmHz: -137.2, pedestalRollMHz: 1.6, edgeLiftDb: 2.2 },
+    bravo: { id: "bravo", label: "B", minMHz: 2280, maxMHz: 2316, color: "#ff8f70", awgnDensityDbmHz: -137.2, pedestalRollMHz: 1.6, edgeLiftDb: 2.2 }
+  };
+
+  const MULTIPLAYER_TRANSPONDERS = {
+    ...TRANSPONDERS,
+    charlie: { id: "charlie", label: "C", minMHz: 2320, maxMHz: 2356, color: "#6fc2ff", awgnDensityDbmHz: -137.2, pedestalRollMHz: 1.6, edgeLiftDb: 2.2 },
+    delta: { id: "delta", label: "D", minMHz: 2360, maxMHz: 2396, color: "#c79bff", awgnDensityDbmHz: -137.2, pedestalRollMHz: 1.6, edgeLiftDb: 2.2 }
   };
 
   const PLAYERS = {
@@ -80,6 +99,30 @@
   };
   const PLAYER_IDS = Object.keys(PLAYERS);
 
+  function normalizedMode(mode) {
+    return mode === "multiplayer" || mode === "sandbox" ? mode : "solo";
+  }
+
+  function transpondersForMode(mode = gameMode) {
+    return normalizedMode(mode) === "multiplayer" ? MULTIPLAYER_TRANSPONDERS : TRANSPONDERS;
+  }
+
+  function transponderList(mode = gameMode) {
+    return Object.values(transpondersForMode(mode)).sort((a, b) => a.minMHz - b.minMHz);
+  }
+
+  function transponderById(id, mode = gameMode) {
+    return transpondersForMode(mode)[id] || TRANSPONDERS[id] || TRANSPONDERS.alpha;
+  }
+
+  function battleSpanMHzForMode(mode = gameMode) {
+    return normalizedMode(mode) === "multiplayer" ? 160 : 80;
+  }
+
+  function powerProfileForMode(mode = gameMode) {
+    return SYSTEM_POWER_PROFILES[normalizedMode(mode)] || SYSTEM_POWER_PROFILES.solo;
+  }
+
   const WAVEFORMS = {
     "DVB-S2 0.20": { label: "DVB-S2 0.20", rolloff: 0.2, acquisitionDb: 0.25, shoulderDb: -30 },
     "DVB-S2 0.25": { label: "DVB-S2 0.25", rolloff: 0.25, acquisitionDb: 0.1, shoulderDb: -28 },
@@ -87,9 +130,12 @@
   };
 
   const MODULATIONS = {
-    BPSK: { label: "BPSK", bitsPerSymbol: 1 },
-    QPSK: { label: "QPSK", bitsPerSymbol: 2 },
-    "8PSK": { label: "8PSK", bitsPerSymbol: 3 }
+    BPSK: { label: "BPSK", bitsPerSymbol: 1, family: "psk", order: 2 },
+    QPSK: { label: "QPSK", bitsPerSymbol: 2, family: "psk", order: 4 },
+    "8PSK": { label: "8PSK", bitsPerSymbol: 3, family: "psk", order: 8 },
+    "16QAM": { label: "16QAM", bitsPerSymbol: 4, family: "qam", order: 16 },
+    "32QAM": { label: "32QAM", bitsPerSymbol: 5, family: "qam", order: 32 },
+    "64QAM": { label: "64QAM", bitsPerSymbol: 6, family: "qam", order: 64 }
   };
 
   const DIFFICULTY_PROFILES = {
@@ -107,9 +153,12 @@
   };
 
   const REQUIRED_EBNO_DB = {
-    BPSK: { "1/2": 1.2, "2/3": 2.3, "3/4": 3.0, "5/6": 3.8, "7/8": 4.2 },
-    QPSK: { "1/2": 1.4, "2/3": 2.8, "3/4": 3.7, "5/6": 4.8, "7/8": 5.4 },
-    "8PSK": { "1/2": 4.8, "2/3": 6.4, "3/4": 7.7, "5/6": 9.1, "7/8": 9.7 }
+    BPSK: { "1/2": 0.4, "2/3": 1.3, "3/4": 2.0, "5/6": 2.9, "7/8": 3.3 },
+    QPSK: { "1/2": 0.9, "2/3": 2.1, "3/4": 3.0, "5/6": 4.1, "7/8": 4.7 },
+    "8PSK": { "1/2": 4.2, "2/3": 5.7, "3/4": 7.0, "5/6": 8.4, "7/8": 9.1 },
+    "16QAM": { "1/2": 6.2, "2/3": 7.9, "3/4": 9.4, "5/6": 10.9, "7/8": 11.7 },
+    "32QAM": { "1/2": 8.5, "2/3": 10.5, "3/4": 12.0, "5/6": 13.6, "7/8": 14.5 },
+    "64QAM": { "1/2": 10.6, "2/3": 12.8, "3/4": 14.6, "5/6": 16.2, "7/8": 17.2 }
   };
 
   let game = createGame("medium");
@@ -135,27 +184,37 @@
   }
 
   function configurePlayersForMode(mode) {
-    gameMode = mode === "multiplayer" ? "multiplayer" : "solo";
+    gameMode = mode === "multiplayer" ? "multiplayer" : mode === "sandbox" ? "sandbox" : "solo";
     const multiplayer = gameMode === "multiplayer";
-    PLAYERS.alpha.name = multiplayer ? "Player 1" : "Player";
-    PLAYERS.bravo.name = multiplayer ? "Player 2" : "AI Opponent";
-    PLAYERS.bravo.ai = !multiplayer;
+    const sandbox = gameMode === "sandbox";
+    PLAYERS.alpha.name = sandbox ? "Sandbox Receiver" : multiplayer ? "Player 1" : "Player";
+    PLAYERS.bravo.name = sandbox ? "Signal Field" : multiplayer ? "Player 2" : "AI Opponent";
+    PLAYERS.bravo.ai = gameMode === "solo";
   }
 
   function updateLobbyMode() {
     const multiplayer = gameMode === "multiplayer";
-    el.soloMode.classList.toggle("active", !multiplayer);
+    const sandbox = gameMode === "sandbox";
+    el.soloMode.classList.toggle("active", gameMode === "solo");
     el.multiMode.classList.toggle("active", multiplayer);
-    el.soloMode.setAttribute("aria-pressed", String(!multiplayer));
+    el.sandboxMode.classList.toggle("active", sandbox);
+    el.soloMode.setAttribute("aria-pressed", String(gameMode === "solo"));
     el.multiMode.setAttribute("aria-pressed", String(multiplayer));
-    el.difficultyPicker.hidden = multiplayer;
-    el.difficulty.disabled = multiplayer;
-    el.localStart.textContent = multiplayer ? "Start Two-Player Game" : "Start Solo Game";
+    el.sandboxMode.setAttribute("aria-pressed", String(sandbox));
+    el.difficultyPicker.hidden = multiplayer || sandbox;
+    el.difficulty.disabled = multiplayer || sandbox;
+    el.speedPicker.hidden = sandbox;
+    el.gameSpeed.disabled = sandbox;
+    el.networkPanel.hidden = !multiplayer;
+    el.localStart.hidden = multiplayer;
+    el.localStart.textContent = sandbox ? "Start Sandbox" : "Start Solo Game";
+    updateSpeedSummary();
   }
 
   function setGameMode(mode) {
     configurePlayersForMode(mode);
     playerId = "alpha";
+    if (gameMode === "multiplayer") setNetworkStatus(defaultNetworkStatusText());
     updateLobbyMode();
   }
 
@@ -174,17 +233,374 @@
     normalizeAllModems("play");
   }
 
-  function createGame(difficulty = "medium") {
-    const now = Date.now();
+  function speedProfile(speed = DEFAULT_GAME_SPEED) {
+    return GAME_SPEEDS[speed] || GAME_SPEEDS[DEFAULT_GAME_SPEED];
+  }
+
+  function gameSpeedValue() {
+    return el.gameSpeed?.value && GAME_SPEEDS[el.gameSpeed.value] ? el.gameSpeed.value : DEFAULT_GAME_SPEED;
+  }
+
+  function formatSpeedSummary(speed = gameSpeedValue()) {
+    const profile = speedProfile(speed);
+    if (gameMode === "sandbox") return "Sandbox: full 80 MHz analyzer with 4-6 randomized signals, relaxed power limits, and free-form transmit experiments.";
+    if (gameMode === "multiplayer") return `${profile.label}: ${profile.fileLabel} pseudo file over a 160 MHz battle area with four 36 MHz transponders, 4 MHz guard gaps, and extra system power.`;
+    return `${profile.label}: ${profile.fileLabel} pseudo file with a ${Math.round(profile.battleMs / 60_000)} minute live cap. Eb/No, FEC loss, and receiver tuning control progress.`;
+  }
+
+  function updateSpeedSummary() {
+    el.speedSummary.textContent = formatSpeedSummary();
+  }
+
+  function packageBits() {
+    return Number(game.packageBits) || GAME_SPEEDS[DEFAULT_GAME_SPEED].fileBits;
+  }
+
+  function battleDurationMs() {
+    return Number(game.battleDurationMs) || GAME_SPEEDS[DEFAULT_GAME_SPEED].battleMs;
+  }
+
+  function battleEndAt() {
+    return phaseEndAt() + battleDurationMs();
+  }
+
+  function chooseProgressWinner() {
+    const alphaBits = game.players.alpha.progressBits;
+    const bravoBits = game.players.bravo.progressBits;
+    if (Math.abs(alphaBits - bravoBits) < 1) return "tie";
+    return alphaBits > bravoBits ? "alpha" : "bravo";
+  }
+
+  function defaultNetworkStatusText() {
+    if (location.protocol === "file:") {
+      return "Network play needs the local server. Start it with node server.js, then open the http:// address from both computers.";
+    }
+    return "Host on one computer, then join from the second computer with the same room code.";
+  }
+
+  function setNetworkStatus(text, tone = "") {
+    el.networkStatus.textContent = text;
+    el.networkStatus.dataset.tone = tone;
+  }
+
+  function cleanRoomCode(value) {
+    return String(value || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8);
+  }
+
+  function networkUrl() {
+    if (location.protocol === "file:") return null;
+    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+    return `${protocol}//${location.host}/ws`;
+  }
+
+  function sendNetworkMessage(message) {
+    if (!networkSocket || networkSocket.readyState !== WebSocket.OPEN) {
+      setNetworkStatus("Network connection is not open yet.", "bad");
+      return false;
+    }
+    networkSocket.send(JSON.stringify(message));
+    return true;
+  }
+
+  function closeNetworkConnection() {
+    if (networkSocket) {
+      networkSocket.onopen = null;
+      networkSocket.onmessage = null;
+      networkSocket.onclose = null;
+      networkSocket.onerror = null;
+      try {
+        networkSocket.close();
+      } catch {}
+    }
+    networkSocket = null;
+    networkRoomId = "";
+    networkRole = "offline";
+    networkHasStartedView = false;
+  }
+
+  function connectNetwork(onOpen) {
+    const url = networkUrl();
+    if (!url) {
+      setNetworkStatus(defaultNetworkStatusText(), "bad");
+      return;
+    }
+    closeNetworkConnection();
+    setNetworkStatus("Connecting to multiplayer server...");
+    networkSocket = new WebSocket(url);
+    networkSocket.addEventListener("open", onOpen);
+    networkSocket.addEventListener("message", (evt) => {
+      let message;
+      try {
+        message = JSON.parse(evt.data);
+      } catch {
+        return;
+      }
+      handleNetworkMessage(message);
+    });
+    networkSocket.addEventListener("close", () => {
+      if (networkRole !== "offline") setNetworkStatus("Disconnected from the multiplayer server.", "bad");
+      networkRole = "offline";
+    });
+    networkSocket.addEventListener("error", () => {
+      setNetworkStatus("Could not reach the multiplayer server. Start node server.js and open the http:// address.", "bad");
+    });
+  }
+
+  function beginDrawLoop() {
+    if (drawingStarted) return;
+    drawingStarted = true;
+    draw();
+  }
+
+  function showGameView() {
+    started = true;
+    lobby.hidden = true;
+    gameRoot.hidden = false;
+    beginDrawLoop();
+  }
+
+  function startNetworkHostGame(roomId) {
+    networkRole = "host";
+    networkRoomId = roomId;
+    el.roomCode.value = roomId;
+    configurePlayersForMode("multiplayer");
+    playerId = "alpha";
+    game = createGame(el.difficulty.value, gameSpeedValue());
+    state = stateFor(playerId);
+    resetLocalConsoleView();
+    showGameView();
+    updateFromState();
+    if (!reticle) reticle = { freq: settings().center };
+    setNetworkStatus(`Hosting room ${networkRoomId}. Player 2 can join from another computer.`, "good");
+    broadcastNetworkStates();
+  }
+
+  function startNetworkClientLobby(roomId) {
+    networkRole = "client";
+    networkRoomId = roomId;
+    el.roomCode.value = roomId;
+    configurePlayersForMode("multiplayer");
+    playerId = "bravo";
+    networkHasStartedView = false;
+    setNetworkStatus(`Joined room ${networkRoomId}. Waiting for Player 1 state...`, "good");
+  }
+
+  function applyRemoteState(nextState) {
+    const firstState = !networkHasStartedView;
+    state = nextState;
+    if (firstState) {
+      networkHasStartedView = true;
+      resetLocalConsoleView();
+      showGameView();
+    }
+    updateFromState();
+    if (!reticle) reticle = { freq: settings().center };
+  }
+
+  function broadcastNetworkStates() {
+    if (networkRole !== "host" || !networkRoomId || !networkSocket || networkSocket.readyState !== WebSocket.OPEN) return;
+    const snapshots = {
+      alpha: stateFor("alpha"),
+      bravo: stateFor("bravo")
+    };
+    state = snapshots[playerId];
+    for (const id of PLAYER_IDS) {
+      sendNetworkMessage({
+        type: "state",
+        roomId: networkRoomId,
+        playerId: id,
+        state: snapshots[id]
+      });
+    }
+  }
+
+  function handleNetworkMessage(message) {
+    if (message.type === "hosted") {
+      startNetworkHostGame(message.roomId);
+      return;
+    }
+
+    if (message.type === "joined") {
+      startNetworkClientLobby(message.roomId);
+      return;
+    }
+
+    if (message.type === "peerStatus") {
+      if (networkRole === "host" && networkRoomId) {
+        const joined = message.players?.bravo ? "Player 2 connected." : "Waiting for Player 2.";
+        setNetworkStatus(`Hosting room ${networkRoomId}. ${joined}`, message.players?.bravo ? "good" : "");
+      }
+      return;
+    }
+
+    if (message.type === "action" && networkRole === "host") {
+      sendLocalAction(message.playerId, message.payload || {}).then(() => {
+        broadcastNetworkStates();
+        updateFromState();
+      });
+      return;
+    }
+
+    if (message.type === "state" && networkRole === "client" && message.playerId === playerId && message.state) {
+      applyRemoteState(message.state);
+      return;
+    }
+
+    if (message.type === "error") {
+      setNetworkStatus(message.message || "Multiplayer server error.", "bad");
+    }
+  }
+
+  function hostNetworkGame() {
+    configurePlayersForMode("multiplayer");
+    connectNetwork(() => {
+      sendNetworkMessage({
+        type: "host",
+        roomId: cleanRoomCode(el.roomCode.value)
+      });
+    });
+  }
+
+  function joinNetworkGame() {
+    const roomId = cleanRoomCode(el.roomCode.value);
+    if (!roomId) {
+      setNetworkStatus("Enter the room code from Player 1 before joining.", "bad");
+      return;
+    }
+    configurePlayersForMode("multiplayer");
+    connectNetwork(() => {
+      sendNetworkMessage({
+        type: "join",
+        roomId
+      });
+    });
+  }
+
+  function randomBetween(min, max) {
+    return min + Math.random() * (max - min);
+  }
+
+  function randomChoice(items) {
+    return items[Math.floor(Math.random() * items.length)];
+  }
+
+  function sandboxCarrierPowerDbm(modulationName, fecName, waveformName, symbolRateMsps, occupiedMHz, centerMHz) {
+    const waveform = WAVEFORMS[waveformName] || WAVEFORMS["RRC 0.35"];
+    const modulation = MODULATIONS[modulationName] || MODULATIONS.QPSK;
+    const fec = FEC_RATES[fecName] || FEC_RATES["3/4"];
+    const txp = transponderForCenter(centerMHz);
+    const receiverBandwidthHz = Math.max(symbolRateMsps * 1_000_000, 1);
+    const bitRateBps = Math.max(symbolRateMsps * modulation.bitsPerSymbol * fec.rate * 1_000_000, 1);
+    const requiredEbNoDb = (REQUIRED_EBNO_DB[modulationName]?.[fecName] ?? 4.5) + waveform.acquisitionDb;
+    const noiseDensityDbmHz = (Number(txp.awgnDensityDbmHz) || -137.2) + 0.65 + transponderEdgeLiftDb(centerMHz, txp) * 0.45;
+    const noiseDbm = noiseDensityDbmHz + 10 * Math.log10(receiverBandwidthHz);
+    const complexity = Math.max(0, modulation.bitsPerSymbol - 2);
+    const formatPenaltyDb = Math.max(0, symbolRateMsps - 8) * 0.035 +
+      (modulationName === "QPSK" ? 0.16 : modulationName === "8PSK" ? 0.36 : modulation.family === "qam" ? 0.45 + complexity * 0.18 : 0.08);
+    const ebNoBandwidthTermDb = 10 * Math.log10(receiverBandwidthHz / bitRateBps);
+    const targetMarginDb = randomBetween(2.4, 6.2);
+    const neededPowerDbm = noiseDbm + requiredEbNoDb - ebNoBandwidthTermDb + formatPenaltyDb + targetMarginDb;
+    const naturalPowerDbm = randomBetween(-67, -53);
+    return Number(clamp(Math.max(naturalPowerDbm, neededPowerDbm), -68, -45).toFixed(1));
+  }
+
+  function sandboxSignalFor(index, usedIntervals) {
+    const range = battleRange();
+    const occupiedMHz = randomBetween(1.8, 14.5);
+    const waveform = waveformForWidth(occupiedMHz);
+    const rolloff = WAVEFORMS[waveform].rolloff;
+    const symbolRateMsps = occupiedMHz / (1 + rolloff);
+    const modulation = randomChoice(Object.keys(MODULATIONS));
+    const fec = randomChoice(Object.keys(FEC_RATES));
+    const dataRateMbps = symbolRateMsps * MODULATIONS[modulation].bitsPerSymbol * FEC_RATES[fec].rate;
+    const half = occupiedMHz / 2;
+    let centerMHz = randomBetween(range.minMHz + half, range.maxMHz - half);
+
+    for (let attempt = 0; attempt < 32; attempt++) {
+      const candidate = randomBetween(range.minMHz + half, range.maxMHz - half);
+      const overlaps = usedIntervals.some((interval) =>
+        overlapMHz(candidate - half, candidate + half, interval.lowMHz, interval.highMHz) > Math.min(occupiedMHz, interval.widthMHz) * 0.42
+      );
+      centerMHz = candidate;
+      if (!overlaps) break;
+    }
+
+    const lowMHz = centerMHz - half;
+    const highMHz = centerMHz + half;
+    usedIntervals.push({ lowMHz, highMHz, widthMHz: occupiedMHz });
     return {
+      id: `sandbox-${index}`,
+      ownerId: "bravo",
+      ownerName: "Signal Field",
+      modemId: index,
+      transponderId: transponderForCenter(centerMHz).id,
+      centerMHz: Number(centerMHz.toFixed(3)),
+      lowMHz: Number(lowMHz.toFixed(3)),
+      highMHz: Number(highMHz.toFixed(3)),
+      occupiedMHz: Number(occupiedMHz.toFixed(3)),
+      usableMHz: Number(symbolRateMsps.toFixed(3)),
+      symbolRateMsps: Number(symbolRateMsps.toFixed(3)),
+      spectralEfficiency: Number((dataRateMbps / Math.max(occupiedMHz, 0.001)).toFixed(3)),
+      dataRateMbps: Number(dataRateMbps.toFixed(3)),
+      waveform,
+      rolloff,
+      shoulderDb: WAVEFORMS[waveform].shoulderDb,
+      modulation,
+      fec,
+      powerDbm: sandboxCarrierPowerDbm(modulation, fec, waveform, symbolRateMsps, occupiedMHz, centerMHz),
+      powerBackoffDb: 0,
+      isData: true,
+      sandbox: true
+    };
+  }
+
+  function generateSandboxSignals() {
+    const count = 4 + Math.floor(Math.random() * 3);
+    const usedIntervals = [];
+    return Array.from({ length: count }, (_, index) => sandboxSignalFor(index + 1, usedIntervals))
+      .sort((a, b) => a.centerMHz - b.centerMHz);
+  }
+
+  function configureSandboxReceivers(nextGame) {
+    const signals = nextGame.sandboxSignals || [];
+    const alpha = nextGame.players.alpha;
+    for (const modem of alpha.modems) Object.assign(modem, { txOn: false, target: "own" });
+    if (signals[0]) {
+      Object.assign(alpha.dataRx, {
+        centerMHz: signals[0].centerMHz,
+        bandwidthMHz: preferredReceiverBandwidthMHz(signals[0]),
+        modulation: signals[0].modulation,
+        fec: signals[0].fec
+      });
+    }
+    alpha.rxModems.forEach((rx, index) => {
+      const signal = signals[index + 1] || signals[index] || signals[0];
+      if (!signal) return;
+      Object.assign(rx, {
+        centerMHz: signal.centerMHz,
+        bandwidthMHz: preferredReceiverBandwidthMHz(signal),
+        modulation: signal.modulation
+      });
+    });
+  }
+
+  function createGame(difficulty = "medium", speed = DEFAULT_GAME_SPEED) {
+    const now = Date.now();
+    const selectedSpeed = speedProfile(speed);
+    const sandbox = gameMode === "sandbox";
+    const nextGame = {
       roundId: Math.random().toString(36).slice(2, 10),
       mode: gameMode,
-      startedAt: now,
-      lastAdvancedAt: now,
-      dataLocked: false,
-      ready: { alpha: false, bravo: PLAYERS.bravo.ai },
+      speed: selectedSpeed.id,
+      packageBits: selectedSpeed.fileBits,
+      battleDurationMs: selectedSpeed.battleMs,
+      startedAt: sandbox ? now - PREP_MS : now,
+      lastAdvancedAt: sandbox ? now : now,
+      dataLocked: sandbox,
+      ready: { alpha: sandbox, bravo: sandbox || PLAYERS.bravo.ai },
       winnerId: null,
       difficulty: DIFFICULTY_PROFILES[difficulty] ? difficulty : "medium",
+      sandboxSignals: sandbox ? generateSandboxSignals() : [],
       ai: {
         lastActionAt: 0,
         nextLookAt: now + 999999,
@@ -204,15 +620,17 @@
         pendingEvadePatch: null
       },
       players: {
-        alpha: createPlayerState("alpha"),
-        bravo: createPlayerState("bravo")
+        alpha: createPlayerState("alpha", gameMode),
+        bravo: createPlayerState("bravo", gameMode)
       }
     };
+    if (sandbox) configureSandboxReceivers(nextGame);
+    return nextGame;
   }
 
-  function createPlayerState(id) {
+  function createPlayerState(id, mode = gameMode) {
     const player = PLAYERS[id];
-    const txp = TRANSPONDERS[player.transponderId];
+    const txp = transponderById(player.transponderId, mode);
     const spacing = (txp.maxMHz - txp.minMHz) / 5;
     const dataRates = player.ai ? [12, 4, 5, 3] : [12, 6, 10, 4];
     const mods = player.ai ? ["QPSK", "BPSK", "QPSK", "BPSK"] : ["QPSK", "BPSK", "QPSK", "8PSK"];
@@ -232,7 +650,7 @@
       progressBits: 0,
       lostBits: 0,
       dataRx: createDataRxFromModem(modems[0]),
-      rxModems: createRxModems(id),
+      rxModems: createRxModems(id, mode),
       modems
     };
   }
@@ -257,9 +675,9 @@
     };
   }
 
-  function createRxModems(ownerId) {
+  function createRxModems(ownerId, mode = gameMode) {
     const opponent = PLAYERS[PLAYERS[ownerId].opponentId];
-    const txp = TRANSPONDERS[opponent.transponderId];
+    const txp = transponderById(opponent.transponderId, mode);
     return Array.from({ length: 2 }, (_, index) => ({
       id: index + 1,
       centerMHz: Number((txp.minMHz + (index + 1) * (txp.maxMHz - txp.minMHz) / 3).toFixed(3)),
@@ -276,7 +694,8 @@
     const waveform = WAVEFORMS[modem.waveform] || WAVEFORMS["RRC 0.35"];
     const modulation = MODULATIONS[modem.modulation] || MODULATIONS.QPSK;
     const fec = FEC_RATES[modem.fec] || FEC_RATES["3/4"];
-    const dataRateMbps = clamp(Number(modem.dataRateMbps) || 1, 0.25, 90);
+    const legacyDataRate = Number(modem.symbolRateMsps) * modulation.bitsPerSymbol * fec.rate;
+    const dataRateMbps = clamp(Number(modem.dataRateMbps) || legacyDataRate || 1, 0.25, 180);
     const symbolRateMsps = dataRateMbps / Math.max(modulation.bitsPerSymbol * fec.rate, 0.001);
     const occupiedMHz = symbolRateMsps * (1 + waveform.rolloff);
     const usableMHz = symbolRateMsps;
@@ -296,7 +715,9 @@
   }
 
   function phaseAt(now) {
+    if (game.mode === "sandbox") return "play";
     if (game.winnerId) return "complete";
+    if (now >= battleEndAt()) return "complete";
     return now - game.startedAt < PREP_MS ? "prep" : "play";
   }
 
@@ -304,35 +725,43 @@
     return game.startedAt + PREP_MS;
   }
 
-  function transponderForCenter(centerMHz) {
-    return centerMHz >= TRANSPONDERS.bravo.minMHz ? TRANSPONDERS.bravo : TRANSPONDERS.alpha;
+  function transponderForCenter(centerMHz, mode = gameMode) {
+    const txps = transponderList(mode);
+    const inBand = txps.find((txp) => centerMHz >= txp.minMHz && centerMHz <= txp.maxMHz);
+    if (inBand) return inBand;
+    return txps.reduce((best, txp) => {
+      const center = (txp.minMHz + txp.maxMHz) / 2;
+      const distance = Math.abs(centerMHz - center);
+      return !best || distance < best.distance ? { txp, distance } : best;
+    }, null).txp;
   }
 
-  function battleRange() {
-    const minTxp = Math.min(...Object.values(TRANSPONDERS).map((txp) => txp.minMHz));
-    const maxTxp = Math.max(...Object.values(TRANSPONDERS).map((txp) => txp.maxMHz));
-    const guard = Math.max(0, (80 - (maxTxp - minTxp)) / 2);
+  function battleRange(mode = gameMode) {
+    const txps = transponderList(mode);
+    const minTxp = Math.min(...txps.map((txp) => txp.minMHz));
+    const maxTxp = Math.max(...txps.map((txp) => txp.maxMHz));
+    const guard = Math.max(0, (battleSpanMHzForMode(mode) - (maxTxp - minTxp)) / 2);
     return { minMHz: minTxp - guard, maxMHz: maxTxp + guard };
   }
 
-  function isGuardFrequency(freqMHz) {
-    const range = battleRange();
-    return (freqMHz >= range.minMHz && freqMHz < TRANSPONDERS.alpha.minMHz) ||
-      (freqMHz > TRANSPONDERS.alpha.maxMHz && freqMHz < TRANSPONDERS.bravo.minMHz) ||
-      (freqMHz > TRANSPONDERS.bravo.maxMHz && freqMHz <= range.maxMHz);
+  function isGuardFrequency(freqMHz, mode = gameMode) {
+    const range = battleRange(mode);
+    const inRange = freqMHz >= range.minMHz && freqMHz <= range.maxMHz;
+    const inTransponder = transponderList(mode).some((txp) => freqMHz >= txp.minMHz && freqMHz <= txp.maxMHz);
+    return inRange && !inTransponder;
   }
 
-  function humanSignalNearGuard(freqMHz) {
+  function humanSignalNearGuard(freqMHz, mode = gameMode) {
     return buildSignals("play").some((signal) =>
       signal.ownerId === "alpha" &&
-      isGuardFrequency(signal.centerMHz) &&
+      isGuardFrequency(signal.centerMHz, mode) &&
       Math.abs(signal.centerMHz - freqMHz) <= Math.max(1.2, signal.occupiedMHz * 0.65)
     );
   }
 
   function targetTransponderId(ownerId, modem, phase) {
     if (phase === "prep") return PLAYERS[ownerId].transponderId;
-    return transponderForCenter(Number(modem.centerMHz) || TRANSPONDERS[PLAYERS[ownerId].transponderId].minMHz).id;
+    return transponderForCenter(Number(modem.centerMHz) || transponderById(PLAYERS[ownerId].transponderId, game.mode).minMHz, game.mode).id;
   }
 
   function maxDataRateForTransponder(modem, txp) {
@@ -343,20 +772,22 @@
   }
 
   function normalizeModemPlacement(ownerId, modem, phase = phaseAt(Date.now())) {
-    let txp = phase === "prep" ? TRANSPONDERS[PLAYERS[ownerId].transponderId] : battleRange();
+    let txp = phase === "prep" ? transponderById(PLAYERS[ownerId].transponderId, game.mode) : battleRange(game.mode);
     if (phase !== "prep" && ownerId === "bravo" && PLAYERS.bravo.ai && game.difficulty !== "hard") {
       if (modem.dataSelected) {
-        txp = TRANSPONDERS.bravo;
-      } else if (isGuardFrequency(Number(modem.centerMHz) || 0) && !humanSignalNearGuard(Number(modem.centerMHz) || 0)) {
-        txp = transponderForCenter(Number(modem.centerMHz) || TRANSPONDERS.bravo.minMHz);
+        txp = transponderById("bravo", game.mode);
+      } else if (isGuardFrequency(Number(modem.centerMHz) || 0, game.mode) && !humanSignalNearGuard(Number(modem.centerMHz) || 0, game.mode)) {
+        txp = transponderForCenter(Number(modem.centerMHz) || transponderById("bravo", game.mode).minMHz, game.mode);
       }
     }
     modem.waveform = modem.waveform && WAVEFORMS[modem.waveform] ? modem.waveform : "DVB-S2 0.20";
     modem.dataRateMbps = Number(clamp(Number(modem.dataRateMbps) || 1, 0.25, maxDataRateForTransponder(modem, txp)).toFixed(3));
     const shape = modemShape(modem);
+    modem.symbolRateMsps = Number(shape.symbolRateMsps.toFixed(3));
     const half = Math.min(shape.occupiedMHz / 2, (txp.maxMHz - txp.minMHz) / 2);
     modem.centerMHz = Number(clamp(Number(modem.centerMHz) || (txp.minMHz + txp.maxMHz) / 2, txp.minMHz + half, txp.maxMHz - half).toFixed(3));
-    modem.powerDbm = Number(clamp(Number(modem.powerDbm) || -62, -80, -45).toFixed(1));
+    const power = powerProfileForMode(game.mode);
+    modem.powerDbm = Number(clamp(Number(modem.powerDbm) || -62, power.modemMinDbm, power.modemMaxDbm).toFixed(1));
   }
 
   function normalizeAllModems(phase = phaseAt(Date.now())) {
@@ -367,7 +798,8 @@
 
   function rawSignalPowerDbm(modem, isData) {
     const shape = modemShape(modem);
-    return clamp(Number(modem.powerDbm) || -62, -80, -45) + (isData ? 1.1 : 0) - Math.max(0, shape.occupiedMHz - 10) * 0.11;
+    const power = powerProfileForMode(game.mode);
+    return clamp(Number(modem.powerDbm) || -62, power.modemMinDbm, power.modemMaxDbm) + (isData ? 1.1 : 0) - Math.max(0, shape.occupiedMHz - 10) * 0.11;
   }
 
   function ownerBandwidthBackoffDb(ownerId) {
@@ -376,7 +808,8 @@
       if (!modem.txOn) continue;
       occupied += modemShape(modem).occupiedMHz;
     }
-    return occupied > SYSTEM_OCCUPANCY_SOFT_MHZ ? -(occupied - SYSTEM_OCCUPANCY_SOFT_MHZ) * 0.62 : 0;
+    const softMHz = powerProfileForMode(game.mode).occupancySoftMHz;
+    return occupied > softMHz ? -(occupied - softMHz) * 0.62 : 0;
   }
 
   function ownerPowerBackoffDb(ownerId) {
@@ -385,7 +818,7 @@
       if (!modem.txOn) continue;
       totalMw += dbmToMw(rawSignalPowerDbm(modem, modem.dataSelected));
     }
-    const limitMw = dbmToMw(SYSTEM_OUTPUT_LIMIT_DBM);
+    const limitMw = dbmToMw(powerProfileForMode(game.mode).outputLimitDbm);
     const capBackoffDb = totalMw > limitMw ? ratioToDb(limitMw / totalMw) : 0;
     return capBackoffDb + ownerBandwidthBackoffDb(ownerId);
   }
@@ -396,6 +829,7 @@
 
   function buildSignals(phase = phaseAt(Date.now())) {
     const signals = [];
+    if (game.mode === "sandbox") signals.push(...(game.sandboxSignals || []));
     for (const ownerId of Object.keys(PLAYERS)) {
       const owner = PLAYERS[ownerId];
       const powerBackoffDb = ownerPowerBackoffDb(ownerId);
@@ -432,19 +866,74 @@
     return signals;
   }
 
+  function uniquePositiveBandwidths(values) {
+    const unique = [];
+    for (const value of values) {
+      const bandwidth = Number(value);
+      if (!Number.isFinite(bandwidth) || bandwidth <= 0) continue;
+      if (unique.some((item) => Math.abs(item - bandwidth) < 0.001)) continue;
+      unique.push(bandwidth);
+    }
+    return unique;
+  }
+
+  function signalAcceptsMeasuredBandwidth(signal) {
+    return true;
+  }
+
+  function usesSandboxReceiverTolerance(signal) {
+    return Boolean(signal?.sandbox || game.mode === "sandbox");
+  }
+
+  function receiverBandwidthCandidates(signal) {
+    const measuredOk = signalAcceptsMeasuredBandwidth(signal);
+    const candidates = uniquePositiveBandwidths([
+      signal?.usableMHz,
+      signal?.symbolRateMsps,
+      measuredOk ? signal?.occupiedMHz : null
+    ]);
+    if (!candidates.length && signal?.occupiedMHz) candidates.push(signal.occupiedMHz);
+    return candidates;
+  }
+
+  function preferredReceiverBandwidthMHz(signal) {
+    if (signalAcceptsMeasuredBandwidth(signal) && Number(signal?.occupiedMHz) > 0) return signal.occupiedMHz;
+    return receiverBandwidthCandidates(signal)[0] || 1;
+  }
+
+  function receiverBandwidthMatch(rxBandwidthMHz, signal) {
+    const rxBandwidth = Number(rxBandwidthMHz) || 0;
+    let best = { targetMHz: preferredReceiverBandwidthMHz(signal), errorFraction: Infinity };
+    for (const targetMHz of receiverBandwidthCandidates(signal)) {
+      const errorFraction = Math.abs(rxBandwidth - targetMHz) / Math.max(targetMHz, 0.001);
+      if (errorFraction < best.errorFraction) best = { targetMHz, errorFraction };
+    }
+    return best;
+  }
+
+  function receiverCenterToleranceMHz(signal) {
+    const occupiedMHz = Number(signal?.occupiedMHz) || 1;
+    return usesSandboxReceiverTolerance(signal)
+      ? Math.max(0.15, occupiedMHz * 0.08)
+      : Math.max(0.08, occupiedMHz * 0.05);
+  }
+
+  function receiverBandwidthTolerance(signal) {
+    return usesSandboxReceiverTolerance(signal) ? 0.12 : 0.05;
+  }
+
   function evaluateRxModem(ownerId, rx, signals) {
     const opponentId = PLAYERS[ownerId].opponentId;
     let best = null;
     let bestScore = Infinity;
     for (const signal of signals) {
       if (signal.ownerId !== opponentId) continue;
-      const centerTol = Math.max(0.08, signal.occupiedMHz * 0.05);
+      const centerTol = receiverCenterToleranceMHz(signal);
       const centerError = Math.abs(Number(rx.centerMHz) - signal.centerMHz);
-      const lockBandwidthMHz = signal.usableMHz || signal.symbolRateMsps || signal.occupiedMHz;
-      const bandwidthErrorFraction = Math.abs((Number(rx.bandwidthMHz) || 0) - lockBandwidthMHz) / Math.max(lockBandwidthMHz, 0.001);
+      const bandwidthMatch = receiverBandwidthMatch(rx.bandwidthMHz, signal);
       const modulationOk = rx.modulation === signal.modulation;
-      const lockable = modulationOk && centerError <= centerTol && bandwidthErrorFraction <= 0.05;
-      const score = centerError / centerTol + bandwidthErrorFraction * 8 + (modulationOk ? 0 : 4);
+      const lockable = modulationOk && centerError <= centerTol && bandwidthMatch.errorFraction <= receiverBandwidthTolerance(signal);
+      const score = centerError / centerTol + bandwidthMatch.errorFraction * 8 + (modulationOk ? 0 : 4);
       if (lockable && score < bestScore) {
         best = signal;
         bestScore = score;
@@ -471,20 +960,32 @@
 
   function evaluateDataRx(ownerId, signals = buildSignals(phaseAt(Date.now()))) {
     const rx = game.players[ownerId].dataRx;
-    const signal = signals.find((item) => item.ownerId === ownerId && item.isData);
-    if (!rx || !signal) return { locked: false, matchedSignalId: null };
-    const centerTol = Math.max(0.08, signal.occupiedMHz * 0.05);
-    const centerError = Math.abs(Number(rx.centerMHz) - signal.centerMHz);
-    const lockBandwidthMHz = signal.usableMHz || signal.symbolRateMsps || signal.occupiedMHz;
-    const bandwidthErrorFraction = Math.abs((Number(rx.bandwidthMHz) || 0) - lockBandwidthMHz) / Math.max(lockBandwidthMHz, 0.001);
-    const locked =
-      centerError <= centerTol &&
-      bandwidthErrorFraction <= 0.05 &&
-      rx.modulation === signal.modulation &&
-      rx.fec === signal.fec;
+    const candidates = game.mode === "sandbox"
+      ? signals.filter((item) => item.ownerId !== ownerId && item.isData)
+      : signals.filter((item) => item.ownerId === ownerId && item.isData);
+    if (!rx || !candidates.length) return { locked: false, matchedSignalId: null };
+    let best = null;
+    let bestScore = Infinity;
+    for (const signal of candidates) {
+      const centerTol = receiverCenterToleranceMHz(signal);
+      const centerError = Math.abs(Number(rx.centerMHz) - signal.centerMHz);
+      const bandwidthMatch = receiverBandwidthMatch(rx.bandwidthMHz, signal);
+      const modulationOk = rx.modulation === signal.modulation;
+      const fecOk = rx.fec === signal.fec;
+      const lockable =
+        centerError <= centerTol &&
+        bandwidthMatch.errorFraction <= receiverBandwidthTolerance(signal) &&
+        modulationOk &&
+        fecOk;
+      const score = centerError / centerTol + bandwidthMatch.errorFraction * 8 + (modulationOk ? 0 : 4) + (fecOk ? 0 : 3);
+      if (lockable && score < bestScore) {
+        best = signal;
+        bestScore = score;
+      }
+    }
     return {
-      locked,
-      matchedSignalId: locked ? signal.id : null
+      locked: Boolean(best),
+      matchedSignalId: best?.id || null
     };
   }
 
@@ -560,6 +1061,39 @@
     return weighted * (gap > 0 ? dbToRatio(-Math.min(48, 18 + gap * 9)) : 1);
   }
 
+  function interferenceOverlap(interferer, desired) {
+    const overlap = overlapMHz(desired.lowMHz, desired.highMHz, interferer.lowMHz, interferer.highMHz);
+    return {
+      overlapMHz: overlap,
+      desiredFraction: clamp(overlap / Math.max(desired.occupiedMHz, 0.001), 0, 1),
+      interfererFraction: clamp(overlap / Math.max(interferer.occupiedMHz, 0.001), 0, 1)
+    };
+  }
+
+  function interferenceCoupling(interferer, desired) {
+    const overlap = interferenceOverlap(interferer, desired);
+    if (overlap.overlapMHz <= 0) return 1;
+    const widthRatio = desired.occupiedMHz / Math.max(interferer.occupiedMHz, 0.001);
+    const centerOffset = Math.abs(interferer.centerMHz - desired.centerMHz);
+    const centerWeight = clamp(1 - centerOffset / Math.max(desired.occupiedMHz * 0.5, 0.001), 0, 1);
+    const nestedBoost = widthRatio > 1
+      ? 1 + clamp(Math.sqrt(widthRatio) - 1, 0, 2.4) * overlap.interfererFraction * (0.45 + centerWeight * 0.55)
+      : 1;
+    const occupiedDamage = 1 + overlap.desiredFraction * overlap.interfererFraction * 0.95;
+    const coChannelWeight = 0.72 + centerWeight * 0.62;
+    return clamp(nestedBoost * occupiedDamage * coChannelWeight, 0.45, 5.25);
+  }
+
+  function environmentalNoiseDensityDbmHz(ownerId, desired, txp) {
+    const t = Date.now() / 1000;
+    const base = Number(txp?.awgnDensityDbmHz) || -137.2;
+    const seed = ownerId === "alpha" ? 1.17 : 2.61;
+    const edgeLift = transponderEdgeLiftDb(desired.centerMHz, txp) * 0.45;
+    const slow = 0.85 * Math.sin(t * 0.113 + seed + desired.centerMHz * 0.021);
+    const shimmer = 0.42 * Math.sin(t * 0.71 + desired.occupiedMHz * 0.37 + seed);
+    return base + 0.65 + edgeLift + slow + shimmer;
+  }
+
   function erfcApprox(x) {
     const z = Math.abs(x);
     const t = 1 / (1 + z / 2);
@@ -572,9 +1106,14 @@
     if (!Number.isFinite(ebNoDb)) return null;
     const ebNo = dbToRatio(ebNoDb);
     const modulation = MODULATIONS[modulationName] || MODULATIONS.QPSK;
-    if (modulation.bitsPerSymbol <= 2) return 0.5 * erfcApprox(Math.sqrt(ebNo));
-    const order = modulation.bitsPerSymbol === 3 ? 8 : 16;
-    return Math.min(0.5, (2 / modulation.bitsPerSymbol) * (1 - 1 / Math.sqrt(order)) * erfcApprox(Math.sqrt((3 * modulation.bitsPerSymbol * ebNo) / (2 * (order - 1)))));
+    const order = modulation.order || 2 ** modulation.bitsPerSymbol;
+    if (order <= 4 && modulation.family === "psk") return 0.5 * erfcApprox(Math.sqrt(ebNo));
+    if (modulation.family === "psk") {
+      const symbolArg = Math.sqrt(modulation.bitsPerSymbol * ebNo) * Math.sin(Math.PI / order);
+      return Math.min(0.5, erfcApprox(symbolArg) / Math.max(modulation.bitsPerSymbol, 1));
+    }
+    const qamArg = Math.sqrt((3 * modulation.bitsPerSymbol * ebNo) / Math.max(2 * (order - 1), 1));
+    return Math.min(0.5, (2 / modulation.bitsPerSymbol) * (1 - 1 / Math.sqrt(order)) * erfcApprox(qamArg));
   }
 
   function fecResidualBer(preFecBer, marginDb, fecName) {
@@ -590,18 +1129,136 @@
     const seed = ownerId === "alpha" ? 0.7 : 2.1;
     const slowFade = 0.42 * Math.sin(t * 0.17 + seed) + 0.28 * Math.sin(t * 0.047 + signal.centerMHz * 0.13);
     const pointing = 0.18 * Math.sin(t * 0.39 + signal.occupiedMHz * 0.9);
-    const phaseNoise = Math.max(0, signal.symbolRateMsps - 8) * 0.035 + (signal.modulation === "8PSK" ? 0.35 : signal.modulation === "QPSK" ? 0.16 : 0.08);
+    const modulation = MODULATIONS[signal.modulation] || MODULATIONS.QPSK;
+    const complexity = Math.max(0, modulation.bitsPerSymbol - 2);
+    const phaseNoise = Math.max(0, signal.symbolRateMsps - 8) * 0.035 +
+      (signal.modulation === "QPSK" ? 0.16 : signal.modulation === "8PSK" ? 0.36 : modulation.family === "qam" ? 0.45 + complexity * 0.18 : 0.08);
     return slowFade + pointing - phaseNoise;
   }
 
+  function sandboxLinkForPlayer(ownerId, signals) {
+    if (ownerId !== "alpha") return haltedLink("SIGNALS", "Sandbox signal source.");
+    const rx = game.players[ownerId].dataRx;
+    const lock = evaluateDataRx(ownerId, signals);
+    const desiredSignal = signals.find((signal) => signal.id === lock.matchedSignalId);
+    if (!rx || !desiredSignal) {
+      return haltedLink("RX SEARCH", "Tune Data RX to a generated sandbox signal.", { requiredEbNoDb: null });
+    }
+
+    const waveform = WAVEFORMS[desiredSignal.waveform] || WAVEFORMS["RRC 0.35"];
+    const modulation = MODULATIONS[desiredSignal.modulation] || MODULATIONS.QPSK;
+    const fec = FEC_RATES[desiredSignal.fec] || FEC_RATES["3/4"];
+    const requiredEbNoDb = (REQUIRED_EBNO_DB[desiredSignal.modulation]?.[desiredSignal.fec] ?? 4.5) + waveform.acquisitionDb;
+    const desired = {
+      ...desiredSignal,
+      rolloff: desiredSignal.rolloff ?? waveform.rolloff,
+      shoulderDb: desiredSignal.shoulderDb ?? waveform.shoulderDb
+    };
+    const cMw = dbmToMw(desired.powerDbm);
+    const receiverBandwidthHz = Math.max((desired.usableMHz || desired.symbolRateMsps || desired.occupiedMHz) * 1_000_000, 1);
+    const txp = transponderById(desired.transponderId, game.mode) || transponderForCenter(desired.centerMHz, game.mode);
+    const noiseDensityDbmHz = environmentalNoiseDensityDbmHz(ownerId, desired, txp);
+    const noiseDbm = noiseDensityDbmHz + 10 * Math.log10(receiverBandwidthHz);
+    const noiseMw = dbmToMw(noiseDbm);
+    let interferenceMw = 0;
+    let spectralErasurePressure = 0;
+    let strongest = null;
+
+    for (const signal of signals) {
+      if (signal.id === desired.id) continue;
+      const overlap = interferenceOverlap(signal, desired);
+      const contribution = integratedInterferenceMw(signal, desired) * interferenceCoupling(signal, desired) * (signal.ownerId === ownerId ? 0.62 : 1);
+      if (contribution <= 0) continue;
+      interferenceMw += contribution;
+      if (overlap.overlapMHz > 0) {
+        const pressureDb = ratioToDb(contribution / Math.max(noiseMw, 1e-18));
+        spectralErasurePressure += clamp((pressureDb + 2) / 18, 0, 1) *
+          clamp(overlap.desiredFraction * 2.45, 0, 1) *
+          (0.55 + overlap.interfererFraction * 0.45);
+      }
+      if (!strongest || contribution > strongest.mw) strongest = {
+        ownerId: signal.ownerId,
+        modemId: signal.modemId,
+        mw: contribution,
+        dbm: mwToDbm(contribution),
+        overlapMHz: overlap.overlapMHz,
+        coupling: interferenceCoupling(signal, desired)
+      };
+    }
+
+    const niMw = noiseMw + interferenceMw;
+    const cnirDb = ratioToDb(cMw / niMw) + otaPenaltyDb(ownerId, {
+      ...desired,
+      symbolRateMsps: desired.symbolRateMsps,
+      modulation: desired.modulation
+    });
+    const bitRateBps = Math.max(desired.dataRateMbps * 1_000_000, 1);
+    const ebNoDb = cnirDb + 10 * Math.log10(receiverBandwidthHz / bitRateBps);
+    const esNoDb = ebNoDb + 10 * Math.log10(modulation.bitsPerSymbol * fec.rate);
+    const marginDb = ebNoDb - requiredEbNoDb;
+    const preFecBer = berEstimate(desired.modulation, ebNoDb);
+    const postFecBer = fecResidualBer(preFecBer, marginDb, desired.fec);
+    const frameLoss = clamp(1 - Math.exp(-postFecBer * 64_800), 0, 1);
+    const syncLoss = marginDb < -2.5 ? clamp((-marginDb - 2.5) / 5.5, 0, 1) : 0;
+    const erasureLoss = clamp(spectralErasurePressure * 0.58, 0, 0.9);
+    const lossFraction = clamp(1 - (1 - frameLoss) * (1 - syncLoss) * (1 - erasureLoss), 0, 1);
+    const goodput = clamp(1 - lossFraction, 0, 1);
+    const merDb = cnirDb + 10 * Math.log10(Math.max(desired.occupiedMHz / Math.max(desired.symbolRateMsps, 0.001), 0.001));
+    const jamFraction = clamp(0.48 * (1 - goodput) + Math.max(0, -marginDb) / 10 + (frameLoss || 0) * 0.32 + erasureLoss * 0.55, 0, 1);
+    const flowing = goodput > 0.12 && marginDb > -3.5;
+
+    return {
+      state: flowing ? "LOCKED" : jamFraction > 0.72 ? "JAMMED" : "LOW MARGIN",
+      detail: flowing ? "Sandbox signal demod is coherent." : "Sandbox signal is degraded by noise or overlap.",
+      flowing,
+      throughputMbps: desired.dataRateMbps * goodput * DATA_TRANSFER_SCALE,
+      offeredMbps: desired.dataRateMbps * DATA_TRANSFER_SCALE,
+      goodput,
+      lossFraction,
+      ebNoDb,
+      requiredEbNoDb,
+      marginDb,
+      cnirDb,
+      cn0DbHz: ratioToDb(cMw / Math.max(niMw / Math.max(receiverBandwidthHz, 1), 1e-18)),
+      esNoDb,
+      merDb,
+      evmPercent: 100 / Math.sqrt(dbToRatio(Math.max(esNoDb, -40))),
+      ber: preFecBer,
+      postFecBer,
+      frameLoss,
+      erasureLoss,
+      noiseDbm,
+      noiseDensityDbmHz,
+      interferenceDbm: interferenceMw > 0 ? mwToDbm(interferenceMw) : null,
+      interferenceToNoiseDb: interferenceMw > 0 ? ratioToDb(interferenceMw / noiseMw) : null,
+      occupiedMHz: desired.occupiedMHz,
+      symbolRateMsps: desired.symbolRateMsps,
+      spectralEfficiency: desired.spectralEfficiency,
+      dataRateMbps: desired.dataRateMbps,
+      rolloff: desired.rolloff,
+      powerDbm: desired.powerDbm,
+      inBandFraction: 1,
+      jamFraction,
+      dataRxLocked: true,
+      pressure: interferenceMw > 0 ? clamp(ratioToDb(interferenceMw / noiseMw) / 16, 0, 1) : 0,
+      strongest
+    };
+  }
+
   function computeLinks(signals = buildSignals()) {
+    if (game.mode === "sandbox") {
+      return {
+        alpha: sandboxLinkForPlayer("alpha", signals),
+        bravo: haltedLink("SIGNALS", "Sandbox signal source.")
+      };
+    }
     return Object.fromEntries(Object.keys(PLAYERS).map((id) => [id, computeLinkForPlayer(id, signals)]));
   }
 
   function computeLinkForPlayer(ownerId, signals) {
     const owner = PLAYERS[ownerId];
     const dataModem = game.players[ownerId].modems.find((modem) => modem.dataSelected);
-    const ownTxp = TRANSPONDERS[owner.transponderId];
+    const ownTxp = transponderById(owner.transponderId, game.mode);
     if (!dataModem) return haltedLink("NO DATA MODEM", "Pick one modem before prep ends.");
     const shape = modemShape(dataModem);
     if (!dataModem.txOn) return haltedLink("STANDBY", "Data modem is not transmitting.", { requiredEbNoDb: shape.requiredEbNoDb });
@@ -624,16 +1281,35 @@
 
     const cMw = dbmToMw(desired.powerDbm) * inBandFraction;
     const receiverBandwidthHz = Math.max(shape.usableMHz * 1_000_000, 1);
-    const noiseDbm = -144 + 10 * Math.log10(receiverBandwidthHz);
+    const noiseDensityDbmHz = environmentalNoiseDensityDbmHz(ownerId, desired, ownTxp);
+    const noiseDbm = noiseDensityDbmHz + 10 * Math.log10(receiverBandwidthHz);
     const noiseMw = dbmToMw(noiseDbm);
     let interferenceMw = 0;
+    let spectralErasurePressure = 0;
     let strongest = null;
     for (const signal of signals) {
       if (signal.id === desired.id) continue;
-      const contribution = integratedInterferenceMw(signal, desired) * (signal.ownerId === ownerId ? 0.62 : 1);
+      const overlap = interferenceOverlap(signal, desired);
+      const coupling = interferenceCoupling(signal, desired);
+      const sameOwnerBackoff = signal.ownerId === ownerId ? 0.62 : 1;
+      const contribution = integratedInterferenceMw(signal, desired) * coupling * sameOwnerBackoff;
       if (contribution <= 0) continue;
       interferenceMw += contribution;
-      if (!strongest || contribution > strongest.mw) strongest = { ownerId: signal.ownerId, modemId: signal.modemId, mw: contribution, dbm: mwToDbm(contribution), overlapMHz: overlapMHz(desired.lowMHz, desired.highMHz, signal.lowMHz, signal.highMHz) };
+      if (overlap.overlapMHz > 0) {
+        const pressureDb = ratioToDb(contribution / Math.max(noiseMw, 1e-18));
+        const erasureWeight = clamp((pressureDb + 2) / 18, 0, 1) *
+          clamp(overlap.desiredFraction * 2.45, 0, 1) *
+          (0.55 + overlap.interfererFraction * 0.45);
+        spectralErasurePressure += erasureWeight;
+      }
+      if (!strongest || contribution > strongest.mw) strongest = {
+        ownerId: signal.ownerId,
+        modemId: signal.modemId,
+        mw: contribution,
+        dbm: mwToDbm(contribution),
+        overlapMHz: overlap.overlapMHz,
+        coupling
+      };
     }
 
     const niMw = noiseMw + interferenceMw;
@@ -646,11 +1322,12 @@
     const postFecBer = fecResidualBer(preFecBer, marginDb, dataModem.fec);
     const frameLoss = clamp(1 - Math.exp(-postFecBer * 64_800), 0, 1);
     const syncLoss = marginDb < -2.5 ? clamp((-marginDb - 2.5) / 5.5, 0, 1) : 0;
-    const lossFraction = clamp(1 - (1 - frameLoss) * (1 - syncLoss), 0, 1);
+    const erasureLoss = clamp(spectralErasurePressure * 0.58, 0, 0.9);
+    const lossFraction = clamp(1 - (1 - frameLoss) * (1 - syncLoss) * (1 - erasureLoss), 0, 1);
     const goodput = clamp(1 - lossFraction, 0, 1);
     const merDb = cnirDb + 10 * Math.log10(Math.max(shape.occupiedMHz / Math.max(shape.symbolRateMsps, 0.001), 0.001));
     const dataRxLocked = evaluateDataRx(ownerId, signals).locked;
-    const jamFraction = clamp(0.48 * (1 - goodput) + Math.max(0, -marginDb) / 10 + (frameLoss || 0) * 0.38 + Math.max(0, 0.22 - inBandFraction), 0, 1);
+    const jamFraction = clamp(0.48 * (1 - goodput) + Math.max(0, -marginDb) / 10 + (frameLoss || 0) * 0.32 + erasureLoss * 0.55 + Math.max(0, 0.22 - inBandFraction), 0, 1);
     const flowing = dataRxLocked && goodput > 0.12 && marginDb > -3.5;
     const effectiveThroughputMbps = dataRxLocked ? shape.dataRateMbps * goodput * DATA_TRANSFER_SCALE : 0;
     return {
@@ -676,7 +1353,9 @@
       ber: preFecBer,
       postFecBer,
       frameLoss,
+      erasureLoss,
       noiseDbm,
+      noiseDensityDbmHz,
       interferenceDbm: interferenceMw > 0 ? mwToDbm(interferenceMw) : null,
       interferenceToNoiseDb: interferenceMw > 0 ? ratioToDb(interferenceMw / noiseMw) : null,
       occupiedMHz: shape.occupiedMHz,
@@ -713,7 +1392,9 @@
       ber: null,
       postFecBer: null,
       frameLoss: null,
+      erasureLoss: null,
       noiseDbm: null,
+      noiseDensityDbmHz: null,
       interferenceDbm: null,
       interferenceToNoiseDb: null,
       occupiedMHz: extras.occupiedMHz ?? null,
@@ -920,7 +1601,7 @@
 
   function chooseAiDataPatch(profile, aiData, signals, aiLink, humanProgressDelta) {
     const battle = battleRange();
-    const own = TRANSPONDERS.bravo;
+    const own = transponderById("bravo", game.mode);
     const preferredMin = profile.crossBandData && humanProgressDelta > 0.08 ? battle.minMHz : own.minMHz;
     const preferredMax = profile.crossBandData && humanProgressDelta > 0.08 ? battle.maxMHz : own.maxMHz;
     const gaps = gapsInRange(preferredMin, preferredMax, signals, "bravo-1");
@@ -1000,6 +1681,7 @@
   function updateAiOpponent(now) {
     if (!PLAYERS.bravo.ai) return;
     const phase = phaseAt(now);
+    if (phase === "complete") return;
     const aiState = game.players.bravo;
     const aiData = aiState.modems[0];
     const profile = DIFFICULTY_PROFILES[game.difficulty] || DIFFICULTY_PROFILES.medium;
@@ -1037,7 +1719,7 @@
     }
 
     if ((aiLink.jamFraction > 0.58 || (aiLink.lossFraction ?? 0) > 0.24 || (aiLink.marginDb ?? 99) < 1.1) && now - game.ai.lastEvadeAt > profile.evadeMs && game.ai.pendingEvadeAt === null) {
-      const humanProgressDelta = game.players.alpha.progressBits / PACKAGE_BITS - game.players.bravo.progressBits / PACKAGE_BITS;
+      const humanProgressDelta = game.players.alpha.progressBits / packageBits() - game.players.bravo.progressBits / packageBits();
       game.ai.pendingEvadePatch = chooseAiDataPatch(profile, aiData, signals, aiLink, humanProgressDelta);
       game.ai.pendingEvadeAt = now + profile.reconfigureMs;
       game.ai.lastEvadeAt = now;
@@ -1060,25 +1742,33 @@
   }
 
   function advanceGame(now = Date.now()) {
+    if (game.mode === "sandbox") {
+      game.lastAdvancedAt = now;
+      normalizeAllModems("play");
+      return;
+    }
     const previous = game.lastAdvancedAt;
     if (!game.dataLocked && now >= phaseEndAt()) lockDataSelections();
     updateAiOpponent(now);
     normalizeAllModems(phaseAt(now));
     const playableFrom = Math.max(previous, phaseEndAt());
-    const dtSeconds = Math.max(0, (now - playableFrom) / 1000);
+    const playableUntil = Math.min(now, battleEndAt());
+    const dtSeconds = Math.max(0, (playableUntil - playableFrom) / 1000);
     game.lastAdvancedAt = now;
-    if (phaseAt(now) !== "play" || game.winnerId || dtSeconds <= 0) return;
-    const links = computeLinks(buildSignals("play"));
-    for (const ownerId of Object.keys(PLAYERS)) {
-      const modem = game.players[ownerId].modems.find((item) => item.dataSelected);
-      if (!modem || !modem.txOn) continue;
-      const rawBits = Math.max(0, links[ownerId].offeredMbps || 0) * 1_000_000 * dtSeconds;
-      const deliveredBits = links[ownerId].throughputMbps * 1_000_000 * dtSeconds;
-      game.players[ownerId].progressBits = clamp(game.players[ownerId].progressBits + deliveredBits, 0, PACKAGE_BITS);
-      game.players[ownerId].lostBits += Math.max(0, rawBits - deliveredBits);
+    if (!game.winnerId && dtSeconds > 0) {
+      const links = computeLinks(buildSignals("play"));
+      for (const ownerId of Object.keys(PLAYERS)) {
+        const modem = game.players[ownerId].modems.find((item) => item.dataSelected);
+        if (!modem || !modem.txOn) continue;
+        const rawBits = Math.max(0, links[ownerId].offeredMbps || 0) * 1_000_000 * dtSeconds;
+        const deliveredBits = links[ownerId].throughputMbps * 1_000_000 * dtSeconds;
+        game.players[ownerId].progressBits = clamp(game.players[ownerId].progressBits + deliveredBits, 0, packageBits());
+        game.players[ownerId].lostBits += Math.max(0, rawBits - deliveredBits);
+      }
     }
-    const finished = Object.keys(PLAYERS).filter((id) => game.players[id].progressBits >= PACKAGE_BITS);
+    const finished = Object.keys(PLAYERS).filter((id) => game.players[id].progressBits >= packageBits());
     if (finished.length) game.winnerId = finished.sort((a, b) => game.players[b].progressBits - game.players[a].progressBits)[0];
+    if (!game.winnerId && now >= battleEndAt()) game.winnerId = chooseProgressWinner();
   }
 
   function stateFor(id = "alpha") {
@@ -1089,6 +1779,10 @@
     refreshDataRxLock(id, signals);
     refreshRxLocks(id, signals);
     const links = computeLinks(signals);
+    const mode = game.mode || gameMode;
+    const txps = transpondersForMode(mode);
+    const power = powerProfileForMode(mode);
+    const range = battleRange(mode);
     game.players[id].dataRx.dataPassing = Boolean(game.players[id].dataRx.locked && links[id].flowing);
     const players = {};
     for (const ownerId of Object.keys(PLAYERS)) {
@@ -1097,7 +1791,7 @@
         name: PLAYERS[ownerId].name,
         color: PLAYERS[ownerId].color,
         transponderId: PLAYERS[ownerId].transponderId,
-        progress: game.players[ownerId].progressBits / PACKAGE_BITS,
+        progress: game.players[ownerId].progressBits / packageBits(),
         deliveredBits: game.players[ownerId].progressBits,
         lostBits: game.players[ownerId].lostBits,
         link: links[ownerId]
@@ -1105,15 +1799,22 @@
     }
     return {
       roundId: game.roundId,
-      mode: game.mode || gameMode,
+      mode,
       phase,
       prepMs: PREP_MS,
       dataLocked: game.dataLocked,
       ready: { ...(game.ready || {}) },
       timeRemainingMs: phase === "prep" ? Math.max(0, phaseEndAt() - now) : 0,
+      battleRemainingMs: phase === "play" ? Math.max(0, battleEndAt() - now) : 0,
       winnerId: game.winnerId,
-      packageBits: PACKAGE_BITS,
-      pseudoFile: { name: "mission_payload_8Gb.bin", bits: PACKAGE_BITS },
+      sandboxSignalCount: game.mode === "sandbox" ? (game.sandboxSignals || []).length : 0,
+      battleRange: range,
+      battleSpanMHz: range.maxMHz - range.minMHz,
+      powerProfile: power,
+      speed: game.speed || DEFAULT_GAME_SPEED,
+      battleDurationMs: battleDurationMs(),
+      packageBits: packageBits(),
+      pseudoFile: { name: `mission_payload_${speedProfile(game.speed).fileLabel.replace(" ", "")}.bin`, bits: packageBits() },
       you: PLAYERS[id],
       players,
       yourModems: game.players[id].modems.map((modem) => {
@@ -1136,7 +1837,7 @@
       yourDataRx: { ...game.players[id].dataRx },
       yourRxModems: game.players[id].rxModems.map((rx) => ({ ...rx })),
       signals: phase === "prep" ? signals.filter((signal) => signal.ownerId === id && signal.transponderId === PLAYERS[id].transponderId) : signals,
-      transponders: TRANSPONDERS,
+      transponders: txps,
       options: { waveforms: Object.keys(WAVEFORMS), modulations: Object.keys(MODULATIONS), fecRates: Object.keys(FEC_RATES) }
     };
   }
@@ -1154,12 +1855,12 @@
     waterfall.lastSerial = 0;
   }
 
-  function sendAction(asPlayer, payload) {
+  function sendLocalAction(asPlayer, payload) {
     const ownerId = asPlayer === "bravo" ? "bravo" : "alpha";
     advanceGame(Date.now());
 
     if (payload.type === "resetRound") {
-      game = createGame(el.difficulty?.value || game.difficulty || "medium");
+      game = createGame(el.difficulty?.value || game.difficulty || "medium", game.speed || gameSpeedValue());
       return Promise.resolve(stateFor(ownerId));
     }
 
@@ -1186,6 +1887,11 @@
       if (Object.prototype.hasOwnProperty.call(patch, "waveform") && WAVEFORMS[patch.waveform]) modem.waveform = patch.waveform;
       if (Object.prototype.hasOwnProperty.call(patch, "modulation") && MODULATIONS[patch.modulation]) modem.modulation = patch.modulation;
       if (Object.prototype.hasOwnProperty.call(patch, "fec") && FEC_RATES[patch.fec]) modem.fec = patch.fec;
+      if (Object.prototype.hasOwnProperty.call(patch, "symbolRateMsps") && !Object.prototype.hasOwnProperty.call(patch, "dataRateMbps")) {
+        const modulation = MODULATIONS[modem.modulation] || MODULATIONS.QPSK;
+        const fec = FEC_RATES[modem.fec] || FEC_RATES["3/4"];
+        modem.dataRateMbps = Number(patch.symbolRateMsps) * modulation.bitsPerSymbol * fec.rate;
+      }
       if (Object.prototype.hasOwnProperty.call(patch, "txOn")) modem.txOn = Boolean(patch.txOn);
       normalizeModemPlacement(ownerId, modem, phase);
       return Promise.resolve(stateFor(ownerId));
@@ -1195,7 +1901,7 @@
       const rx = game.players[ownerId].rxModems.find((item) => item.id === Number(payload.rxId));
       if (!rx) return Promise.resolve(stateFor(ownerId));
       const patch = payload.patch || {};
-      const range = battleRange();
+      const range = battleRange(game.mode);
       if (Object.prototype.hasOwnProperty.call(patch, "centerMHz")) rx.centerMHz = Number(clamp(Number(patch.centerMHz), range.minMHz, range.maxMHz).toFixed(3));
       if (Object.prototype.hasOwnProperty.call(patch, "bandwidthMHz")) rx.bandwidthMHz = Number(clamp(Number(patch.bandwidthMHz), 0.2, 36).toFixed(3));
       if (Object.prototype.hasOwnProperty.call(patch, "modulation") && MODULATIONS[patch.modulation]) rx.modulation = patch.modulation;
@@ -1206,7 +1912,7 @@
     if (payload.type === "updateDataRx") {
       const rx = game.players[ownerId].dataRx;
       const patch = payload.patch || {};
-      const range = battleRange();
+      const range = battleRange(game.mode);
       if (Object.prototype.hasOwnProperty.call(patch, "centerMHz")) rx.centerMHz = Number(clamp(Number(patch.centerMHz), range.minMHz, range.maxMHz).toFixed(3));
       if (Object.prototype.hasOwnProperty.call(patch, "bandwidthMHz")) rx.bandwidthMHz = Number(clamp(Number(patch.bandwidthMHz), 0.2, 36).toFixed(3));
       if (Object.prototype.hasOwnProperty.call(patch, "modulation") && MODULATIONS[patch.modulation]) rx.modulation = patch.modulation;
@@ -1223,9 +1929,28 @@
     return Promise.resolve(stateFor(ownerId));
   }
 
+  function sendAction(asPlayer, payload) {
+    if (networkRole === "client") {
+      sendNetworkMessage({
+        type: "action",
+        roomId: networkRoomId,
+        playerId: playerId,
+        payload
+      });
+      return Promise.resolve(null);
+    }
+
+    return sendLocalAction(asPlayer, payload).then((next) => {
+      if (networkRole === "host") broadcastNetworkStates();
+      return next;
+    });
+  }
+
   async function pollState() {
+    if (networkRole === "client") return;
     state = stateFor(playerId);
     updateFromState();
+    if (networkRole === "host") broadcastNetworkStates();
   }
 
   function formatTime(ms) {
@@ -1266,17 +1991,32 @@
     return `${(bits / 1000).toFixed(0)} kb`;
   }
 
+  function stateBattleRange() {
+    return state?.battleRange || battleRange(state?.mode || gameMode);
+  }
+
+  function statePowerProfile() {
+    return state?.powerProfile || powerProfileForMode(state?.mode || gameMode);
+  }
+
+  function formatTransponderPlan(txps = state?.transponders || transpondersForMode(state?.mode || gameMode)) {
+    return Object.values(txps)
+      .sort((a, b) => a.minMHz - b.minMHz)
+      .map((txp) => `${txp.label} ${txp.minMHz}-${txp.maxMHz} MHz`)
+      .join(" | ");
+  }
+
   function transponderForView() {
     if (!state) return null;
     if (state.phase === "prep") return state.transponders[state.you.transponderId];
-    const range = battleRange();
+    const range = stateBattleRange();
     return { id: "battle", minMHz: range.minMHz, maxMHz: range.maxMHz };
   }
 
   function updatePlayerSwitch() {
-    const multiplayer = state?.mode === "multiplayer";
-    el.playerSwitch.hidden = !multiplayer;
-    if (!multiplayer) return;
+    const canSwitch = state?.mode === "multiplayer" && networkRole === "offline";
+    el.playerSwitch.hidden = !canSwitch;
+    if (!canSwitch) return;
     const buttons = { alpha: el.switchAlpha, bravo: el.switchBravo };
     for (const id of PLAYER_IDS) {
       const button = buttons[id];
@@ -1297,19 +2037,30 @@
     const you = state.you;
     const ownLink = state.players[you.id].link;
     const multiplayer = state.mode === "multiplayer";
+    const sandbox = state.mode === "sandbox";
     const ready = Boolean(state.ready?.[you.id]);
     updatePlayerSwitch();
     el.playerTitle.textContent = `${you.name} Screen`;
-    el.phaseReadout.textContent = state.phase === "prep" ? "Prep" : state.phase === "complete" ? "Complete" : "Transmit";
-    el.timerReadout.textContent = state.phase === "prep" ? formatTime(state.timeRemainingMs) : state.winnerId ? "Done" : "Live";
+    el.phaseReadout.textContent = sandbox ? "Sandbox" : state.phase === "prep" ? "Prep" : state.phase === "complete" ? "Complete" : "Transmit";
+    el.timerReadout.textContent = sandbox
+      ? "Free Run"
+      : state.phase === "prep"
+      ? formatTime(state.timeRemainingMs)
+      : state.phase === "complete"
+        ? "Done"
+        : `Live ${formatTime(state.battleRemainingMs)}`;
     el.linkReadout.textContent = state.winnerId
-      ? state.winnerId === you.id ? "Winner" : "Round Lost"
+      ? state.winnerId === "tie" ? "Tie" : state.winnerId === you.id ? "Winner" : "Round Lost"
       : `${ownLink.state}${ownLink.marginDb === null ? "" : ` ${ownLink.marginDb >= 0 ? "+" : ""}${ownLink.marginDb.toFixed(1)} dB`}`;
-    el.lockNotice.textContent = state.dataLocked
+    el.lockNotice.textContent = sandbox
+      ? "Sandbox mode uses a generated signal field with relaxed power limits. Retune Data RX and the search receivers to explore the full span."
+      : multiplayer
+      ? "Two-computer mode uses a 160 MHz battle span across four transponders. Retune Data RX after changing carrier or format."
+      : state.dataLocked
       ? "Data modem choice is locked. Retune Data RX after changing carrier or format."
       : "Data modem can be changed during prep. Tune Data RX before battle.";
-    el.readyPhase.disabled = state.phase !== "prep" || (multiplayer && ready);
-    el.readyPhase.textContent = state.phase === "prep" ? (multiplayer && ready ? "Waiting" : "Ready") : "Live";
+    el.readyPhase.disabled = sandbox || state.phase !== "prep" || (multiplayer && ready);
+    el.readyPhase.textContent = sandbox ? "Sandbox" : state.phase === "prep" ? (multiplayer && ready ? "Waiting" : "Ready") : "Live";
 
     document.body.classList.toggle("jammed", ownLink.state === "JAMMED" || ownLink.state === "LOW MARGIN" || ownLink.state === "RX UNLOCKED");
     document.body.classList.toggle("flowing", ownLink.flowing);
@@ -1325,11 +2076,18 @@
   function updateScore(id) {
     const row = id === "alpha" ? el.scoreAlpha : el.scoreBravo;
     const player = state.players[id];
-    const percent = Math.min(100, Math.floor(player.progress * 1000) / 10);
+    const sandbox = state.mode === "sandbox";
+    const percent = sandbox
+      ? id === "alpha" ? Math.round((player.link.goodput || 0) * 1000) / 10 : 0
+      : Math.min(100, Math.floor(player.progress * 1000) / 10);
     row.querySelector(".bar-fill").style.width = `${percent}%`;
     row.querySelector(".score-percent").textContent = `${percent.toFixed(1)}%`;
     row.querySelector(".score-label strong").textContent = player.name;
-    const status = state.winnerId === id
+    const status = sandbox && id === "bravo"
+      ? `${state.sandboxSignalCount || 0} signals`
+      : state.winnerId === "tie"
+      ? "Tie"
+      : state.winnerId === id
       ? "Winner"
       : state.phase === "prep" && state.mode === "multiplayer"
         ? state.ready?.[id] ? "Ready" : "Prep"
@@ -1349,11 +2107,17 @@
     el.cn0Readout.textContent = link.cn0DbHz === null ? "-" : `${link.cn0DbHz.toFixed(1)} dB-Hz`;
     el.merReadout.textContent = link.merDb === null ? "-" : `${link.merDb.toFixed(1)} dB / ${link.evmPercent.toFixed(1)}%`;
     el.interferenceReadout.textContent = link.interferenceToNoiseDb === null ? "< noise" : `${link.interferenceToNoiseDb.toFixed(1)} dB`;
-    el.fileReadout.textContent = `${formatBits(playerStats.deliveredBits)} / ${formatBits(state.packageBits)}`;
-    el.lossReadout.textContent = lossPct === null ? "-" : `${lossPct.toFixed(lossPct >= 10 ? 0 : 1)}% now, ${formatBits(playerStats.lostBits)} lost`;
+    el.fileReadout.textContent = state.mode === "sandbox" ? `${state.sandboxSignalCount || 0} generated signals` : `${formatBits(playerStats.deliveredBits)} / ${formatBits(state.packageBits)}`;
+    el.lossReadout.textContent = state.mode === "sandbox"
+      ? lossPct === null ? "-" : `${lossPct.toFixed(lossPct >= 10 ? 0 : 1)}% demod loss`
+      : lossPct === null ? "-" : `${lossPct.toFixed(lossPct >= 10 ? 0 : 1)}% now, ${formatBits(playerStats.lostBits)} lost`;
     el.rbwVbwReadout.textContent = `${formatBandwidth(s.rbwMHz)} / ${formatBandwidth(s.vbwMHz)}`;
     el.procReadout.textContent = formatProcessing(lastSweepInfo);
-    el.bandMap.textContent = `${state.pseudoFile.name} | ${state.players.alpha.name} ${state.transponders.alpha.minMHz}-${state.transponders.alpha.maxMHz} MHz | Guard 4 MHz | ${state.players.bravo.name} ${state.transponders.bravo.minMHz}-${state.transponders.bravo.maxMHz} MHz | 80 MHz battle max | System cap ${SYSTEM_OUTPUT_LIMIT_DBM} dBm`;
+    const range = stateBattleRange();
+    const power = statePowerProfile();
+    el.bandMap.textContent = state.mode === "sandbox"
+      ? `Sandbox | ${Math.round(state.battleSpanMHz || range.maxMHz - range.minMHz)} MHz span ${range.minMHz}-${range.maxMHz} MHz | ${state.sandboxSignalCount || 0} randomized signals | System cap ${power.outputLimitDbm} dBm`
+      : `${state.pseudoFile.name} | ${formatTransponderPlan()} | ${Math.round(state.battleSpanMHz || range.maxMHz - range.minMHz)} MHz battle max | System cap ${power.outputLimitDbm} dBm`;
     el.reticleReadout.textContent = reticle ? `${reticle.freq.toFixed(3)} MHz / ${fmt(getTraceAtFreq(reticle.freq, s), 1)} dBm` : "-";
     el.peakReadout.textContent = peak ? `${peak.freq.toFixed(3)} MHz / ${fmt(peak.amp, 1)} dBm` : "-";
     el.retRead.textContent = reticle ? `${reticle.freq.toFixed(3)} MHz` : "-";
@@ -1371,11 +2135,11 @@
       ? `M${delta.refId}->D ${delta.dfMHz >= 0 ? "+" : ""}${delta.dfMHz.toFixed(3)} MHz / ${delta.dDb >= 0 ? "+" : ""}${delta.dDb.toFixed(1)} dB`
       : "-";
     if (bandwidthMarker?.seedFreq !== undefined) {
-      const updatedBandwidth = measure3DbBandwidth(bandwidthMarker.seedFreq, s);
+      const updatedBandwidth = measureNDbBandwidth(bandwidthMarker.seedFreq, s);
       if (updatedBandwidth) bandwidthMarker = updatedBandwidth;
     }
     el.bw3dbRead.textContent = bandwidthMarker
-      ? `${bandwidthMarker.bandwidthMHz.toFixed(3)} MHz @ ${bandwidthMarker.targetDb.toFixed(1)} dBm`
+      ? `${formatDropDb(bandwidthMarker.dropDb)} ${bandwidthMarker.bandwidthMHz.toFixed(3)} MHz @ ${bandwidthMarker.targetDb.toFixed(1)} dBm`
       : "-";
     const snr = snrFromDelta(s);
     el.snrRead.textContent = snr
@@ -1445,6 +2209,11 @@
       <div class="rx-actions">
         <button data-role="use-ret" type="button">RET</button>
         <button data-role="use-peak" type="button">PK</button>
+        <button data-role="iq" type="button">I/Q</button>
+      </div>
+      <div class="iq-inline" data-role="iq-panel" hidden>
+        <canvas data-role="iq-canvas" width="260" height="180"></canvas>
+        <div class="iq-inline-readout" data-role="iq-readout">Receiver constellation inactive.</div>
       </div>
     `;
     card.querySelector('[data-data-rx-field="modulation"]').innerHTML = state.options.modulations.map((value) => `<option value="${value}">${value}</option>`).join("");
@@ -1481,6 +2250,10 @@
           updateFromState();
         }
       });
+    });
+    card.querySelector('[data-role="iq"]').addEventListener("click", () => {
+      const panel = card.querySelector('[data-role="iq-panel"]');
+      panel.hidden = !panel.hidden;
     });
     addWheelInputs();
     return card;
@@ -1524,6 +2297,11 @@
       <div class="rx-actions">
         <button data-role="use-ret" type="button">RET</button>
         <button data-role="use-peak" type="button">PK</button>
+        <button data-role="iq" type="button">I/Q</button>
+      </div>
+      <div class="iq-inline" data-role="iq-panel" hidden>
+        <canvas data-role="iq-canvas" width="260" height="180"></canvas>
+        <div class="iq-inline-readout" data-role="iq-readout">Receiver constellation inactive.</div>
       </div>
     `;
     const modulation = card.querySelector('[data-rx-field="modulation"]');
@@ -1561,6 +2339,10 @@
         }
       });
     });
+    card.querySelector('[data-role="iq"]').addEventListener("click", () => {
+      const panel = card.querySelector('[data-role="iq-panel"]');
+      panel.hidden = !panel.hidden;
+    });
     addWheelInputs();
     return card;
   }
@@ -1593,10 +2375,10 @@
       </div>
       <div class="modem-fields">
         <div class="field"><label>Center MHz</label><input data-field="centerMHz" type="number" step="0.1"></div>
-        <div class="field"><label>Data Mbps</label><input data-field="dataRateMbps" type="number" min="0.25" max="90" step="0.25"></div>
+        <div class="field"><label>Data Mbps</label><input data-field="dataRateMbps" type="number" min="0.25" max="180" step="0.25"></div>
         <div class="field"><label>Mod</label><select data-field="modulation"></select></div>
         <div class="field"><label>FEC</label><select data-field="fec"></select></div>
-        <div class="field"><label>Power dBm</label><input data-field="powerDbm" type="number" min="-80" max="-45" step="0.5"></div>
+        <div class="field"><label>Power dBm</label><input data-field="powerDbm" type="number" min="-90" max="-30" step="0.5"></div>
       </div>
       <div class="modem-actions">
         <button class="tx-button" data-role="tx" type="button">TX OFF</button>
@@ -1656,6 +2438,11 @@
   }
 
   function hydrateModemCard(card, modem) {
+    const ownTxp = state.transponders[state.you.transponderId];
+    const range = stateBattleRange();
+    const power = statePowerProfile();
+    const txp = state.phase === "prep" ? ownTxp : range;
+    const maxDataRate = maxDataRateForTransponder(modem, txp);
     card.classList.toggle("data", modem.dataSelected);
     card.classList.toggle("transmitting", modem.txOn);
     const pill = card.querySelector('[data-role="data-pill"]');
@@ -1668,9 +2455,11 @@
     setFieldValue(card, "fec", modem.fec);
     setFieldValue(card, "powerDbm", modem.powerDbm);
 
-    const ownTxp = state.transponders[state.you.transponderId];
-    card.querySelector('[data-field="centerMHz"]').min = state.phase === "prep" ? ownTxp.minMHz : battleRange().minMHz;
-    card.querySelector('[data-field="centerMHz"]').max = state.phase === "prep" ? ownTxp.maxMHz : battleRange().maxMHz;
+    card.querySelector('[data-field="centerMHz"]').min = state.phase === "prep" ? ownTxp.minMHz : range.minMHz;
+    card.querySelector('[data-field="centerMHz"]').max = state.phase === "prep" ? ownTxp.maxMHz : range.maxMHz;
+    card.querySelector('[data-field="dataRateMbps"]').max = Math.max(0.25, maxDataRate).toFixed(2);
+    card.querySelector('[data-field="powerDbm"]').min = power.modemMinDbm;
+    card.querySelector('[data-field="powerDbm"]').max = power.modemMaxDbm;
     const txButton = card.querySelector('[data-role="tx"]');
     txButton.textContent = modem.txOn ? "TX ON" : "TX OFF";
     txButton.classList.toggle("on", modem.txOn);
@@ -1698,14 +2487,11 @@
       };
     }
 
-    const all = Object.values(state.transponders);
-    const minTxp = Math.min(...all.map((txp) => txp.minMHz));
-    const maxTxp = Math.max(...all.map((txp) => txp.maxMHz));
-    const guard = Math.max(0, (80 - (maxTxp - minTxp)) / 2);
+    const range = stateBattleRange();
     return {
-      minMHz: minTxp - guard,
-      maxMHz: maxTxp + guard,
-      maxSpanMHz: 80,
+      minMHz: range.minMHz,
+      maxMHz: range.maxMHz,
+      maxSpanMHz: state.battleSpanMHz || range.maxMHz - range.minMHz,
       fixed: false
     };
   }
@@ -1727,7 +2513,7 @@
     const dbDiv = Number(el.dbPerDiv.value) || 8;
     const rbwMHz = Number(el.rbw.value) || 0.1;
     const vbwMHz = Number(el.vbw.value) || rbwMHz;
-    const floor = Number(el.noiseFloor.value) || -94;
+    const floor = Number(el.noiseFloor.value) || -92;
     const avg = Number(el.averaging.value) || 0;
     const fftPoints = Number(el.fftPoints.value) || 16384;
     const window = WINDOW_PROFILES.blackmanHarris;
@@ -1832,10 +2618,10 @@
   function signalTextureDb(signal, freq, x, t, mask) {
     const rel = (freq - signal.centerMHz) / Math.max(signal.occupiedMHz, 0.001);
     const seed = signal.modemId * 31 + (signal.ownerId === "alpha" ? 11 : 73);
-    const slow = 0.42 * Math.sin(rel * 19 + t * 0.53 + seed);
-    const ripple = 0.28 * Math.sin(rel * 47 - t * 0.31 + seed * 0.17);
-    const grain = hashNoise(x, seed + 91.7, t, 5) * 0.38;
-    const shoulder = clamp(1 - mask, 0, 1) * hashNoise(x, seed + 177.4, t, 3) * 1.25;
+    const slow = 0.54 * Math.sin(rel * 19 + t * 0.53 + seed);
+    const ripple = 0.38 * Math.sin(rel * 47 - t * 0.31 + seed * 0.17);
+    const grain = hashNoise(x, seed + 91.7, t, 5) * 0.52;
+    const shoulder = clamp(1 - mask, 0, 1) * hashNoise(x, seed + 177.4, t, 3) * 1.55;
     return slow + ripple + grain + shoulder;
   }
 
@@ -1883,12 +2669,12 @@
     for (const txp of Object.values(state.transponders)) {
       const mask = transponderPedestalMask(freq, txp);
       if (mask <= 0.000001) continue;
-      const densityDbmHz = Number(txp.awgnDensityDbmHz) || -138.5;
+      const densityDbmHz = Number(txp.awgnDensityDbmHz) || -137.2;
       const rippleDb =
         transponderEdgeLiftDb(freq, txp) +
-        0.28 * Math.sin((freq - txp.minMHz) * 0.72 + t * 0.17 + variant) +
-        0.16 * Math.sin((freq - txp.minMHz) * 2.9 - t * 0.23);
-      const noiseJitterDb = hashNoise(x, txp.id === "alpha" ? 118.7 : 244.3, t, Math.max(2, 12 / s.sweepSeconds)) * 0.38;
+        0.52 * Math.sin((freq - txp.minMHz) * 0.72 + t * 0.17 + variant) +
+        0.31 * Math.sin((freq - txp.minMHz) * 2.9 - t * 0.23);
+      const noiseJitterDb = hashNoise(x, txp.id === "alpha" ? 118.7 : 244.3, t, Math.max(2, 12 / s.sweepSeconds)) * 0.72;
       totalMw += dbmToLin(densityDbmHz + 10 * Math.log10(enbwHz) + rippleDb + noiseJitterDb) * mask;
     }
 
@@ -1902,8 +2688,8 @@
     const meanDbm = densityDbmHz + 10 * Math.log10(rbwHz);
     const binRatio = Math.max(s.rbwMHz / Math.max(s.binMHz, 0.000001), 1);
     const processingPenalty = s.uncalibrated ? Math.min(3.8, Math.log2(s.processingLoad) * 1.8) : 0;
-    const sigmaDb = (3.4 / Math.sqrt(Math.log2(binRatio + 2))) + processingPenalty;
-    const ripple = 0.45 * Math.sin(x * 0.018 + t * 0.31) + 0.18 * Math.sin(x * 0.071 - t * 0.83);
+    const sigmaDb = (4.25 / Math.sqrt(Math.log2(binRatio + 2))) + processingPenalty;
+    const ripple = 0.72 * Math.sin(x * 0.018 + t * 0.31) + 0.31 * Math.sin(x * 0.071 - t * 0.83);
     const random = hashNoise(x + variant * 37, 62.4 + variant, t, Math.max(2, 18 / s.sweepSeconds)) * sigmaDb;
     return dbmToLin(meanDbm + ripple + random);
   }
@@ -2161,12 +2947,20 @@
       const distance = Math.max(0, Math.abs(freq - signal.centerMHz) - half);
       if (!best || distance < best.distance) best = { signal, distance };
     }
-    if (best && best.distance <= Math.max(0.8, best.signal.occupiedMHz * 0.2)) return best.signal.usableMHz || best.signal.symbolRateMsps || best.signal.occupiedMHz;
+    if (best && best.distance <= Math.max(0.8, best.signal.occupiedMHz * 0.2)) return preferredReceiverBandwidthMHz(best.signal);
     const deltaWidth = deltaMarker && markers[deltaMarker.refId] ? Math.abs(deltaMarker.freq - markers[deltaMarker.refId].freq) : 0;
     return Math.max(settings().rbwMHz, deltaWidth, 0.1);
   }
 
-  function measure3DbBandwidth(seedFreq = reticle?.freq || peak?.freq || settings().center, s = settings()) {
+  function markerDropDb() {
+    return clamp(Number(el.ndbDown?.value) || 3, 0.5, 30);
+  }
+
+  function formatDropDb(value = markerDropDb()) {
+    return `${Number(value).toFixed(Number(value) % 1 ? 1 : 0)} dB`;
+  }
+
+  function measureNDbBandwidth(seedFreq = reticle?.freq || peak?.freq || settings().center, s = settings(), dropDb = markerDropDb()) {
     const leftLimit = plot.left;
     const rightLimit = el.spectrumCanvas.width - plot.right;
     const seedX = clamp(freqToX(seedFreq, s), leftLimit, rightLimit);
@@ -2182,7 +2976,7 @@
         peakX = x;
       }
     }
-    const targetDb = peakDb - 3;
+    const targetDb = peakDb - dropDb;
     let leftFreq = null;
     for (let x = peakX; x > leftLimit; x--) {
       if (traceDbAtX(x) <= targetDb) {
@@ -2200,6 +2994,7 @@
     if (leftFreq === null || rightFreq === null || rightFreq <= leftFreq) return null;
     return {
       seedFreq,
+      dropDb,
       centerFreq: xToFreq(peakX, s),
       peakDb,
       targetDb,
@@ -2246,8 +3041,7 @@
     if (!reticle) return;
     const x = freqToX(reticle.freq, s);
     if (x < plot.left || x > el.spectrumCanvas.width - plot.right) return;
-    const amp = getTraceAtFreq(reticle.freq, s);
-    const y = Math.max(plot.top, Math.min(el.spectrumCanvas.height - plot.bottom, dbToY(amp, s)));
+    const y = markerYForFreq(reticle.freq, s);
     ctx.save();
     ctx.strokeStyle = "rgba(237, 242, 238, 0.72)";
     ctx.setLineDash([5, 5]);
@@ -2262,6 +3056,7 @@
     ctx.moveTo(x, y - 7);
     ctx.lineTo(x, y + 7);
     ctx.stroke();
+    drawMarkerReadout(x, y, "#edf2ee", ["RET", ...markerMeasurementLines(reticle.freq, s)]);
     ctx.restore();
   }
 
@@ -2282,6 +3077,66 @@
     ctx.restore();
   }
 
+  function markerPowerAt(freq, s) {
+    const interpolated = interpolatedTraceAtFreq(freq, s);
+    if (Number.isFinite(interpolated)) return interpolated;
+    const sampled = getTraceAtFreq(freq, s);
+    return Number.isFinite(sampled) ? sampled : null;
+  }
+
+  function markerYForFreq(freq, s, bottom = el.spectrumCanvas.height - plot.bottom) {
+    const db = markerPowerAt(freq, s);
+    return db === null ? bottom : Math.max(plot.top, Math.min(bottom, dbToY(db, s)));
+  }
+
+  function markerMeasurementLines(freq, s) {
+    const db = markerPowerAt(freq, s);
+    return [
+      `${freq.toFixed(3)} MHz`,
+      db === null ? "- dBm" : `${db.toFixed(1)} dBm`
+    ];
+  }
+
+  function drawMarkerReadout(x, y, color, lines, options = {}) {
+    const right = el.spectrumCanvas.width - plot.right;
+    const bottom = el.spectrumCanvas.height - plot.bottom;
+    const textLines = lines.filter(Boolean);
+    if (!textLines.length) return;
+
+    ctx.save();
+    ctx.font = "11px system-ui, sans-serif";
+    const padX = 6;
+    const padY = 5;
+    const lineHeight = 13;
+    const width = Math.ceil(Math.max(...textLines.map((line) => ctx.measureText(line).width)) + padX * 2);
+    const height = textLines.length * lineHeight + padY * 2 - 2;
+    let boxX = options.align === "center" ? x - width / 2 : x + 12;
+    if (boxX + width > right - 4) boxX = x - width - 12;
+    boxX = clamp(boxX, plot.left + 4, right - width - 4);
+    let boxY = y - height - 18;
+    if (boxY < plot.top + 4) boxY = y + 14;
+    boxY = clamp(boxY, plot.top + 4, bottom - height - 4);
+
+    ctx.fillStyle = "rgba(3, 5, 4, 0.78)";
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    if (typeof ctx.roundRect === "function") {
+      ctx.roundRect(boxX, boxY, width, height, 5);
+    } else {
+      ctx.rect(boxX, boxY, width, height);
+    }
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "#edf2ee";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    textLines.forEach((line, index) => {
+      ctx.fillText(line, boxX + padX, boxY + padY + index * lineHeight);
+    });
+    ctx.restore();
+  }
+
   function drawMarkers(s) {
     const right = el.spectrumCanvas.width - plot.right;
     const bottom = el.spectrumCanvas.height - plot.bottom;
@@ -2290,8 +3145,7 @@
       if (!marker) continue;
       const x = freqToX(marker.freq, s);
       if (x < plot.left || x > right) continue;
-      const amp = getTraceAtFreq(marker.freq, s);
-      const y = Math.max(plot.top, Math.min(bottom, dbToY(amp, s)));
+      const y = markerYForFreq(marker.freq, s, bottom);
       ctx.save();
       ctx.strokeStyle = markerColors[id];
       ctx.lineWidth = id === activeMarker ? 1.8 : 1.2;
@@ -2301,12 +3155,12 @@
       ctx.stroke();
       ctx.restore();
       markerTriangle(x, y, markerColors[id], `M${id}`);
+      drawMarkerReadout(x, y, markerColors[id], [`M${id}`, ...markerMeasurementLines(marker.freq, s)]);
     }
     if (deltaMarker && markers[deltaMarker.refId]) {
       const x = freqToX(deltaMarker.freq, s);
       if (x >= plot.left && x <= right) {
-        const amp = getTraceAtFreq(deltaMarker.freq, s);
-        const y = Math.max(plot.top, Math.min(bottom, dbToY(amp, s)));
+        const y = markerYForFreq(deltaMarker.freq, s, bottom);
         ctx.save();
         ctx.strokeStyle = markerColors[deltaMarker.refId] || "#edf2ee";
         ctx.setLineDash([4, 4]);
@@ -2316,13 +3170,23 @@
         ctx.stroke();
         ctx.restore();
         markerTriangle(x, y, markerColors[deltaMarker.refId] || "#edf2ee", `D${deltaMarker.refId}`);
+        const delta = markerDeltaMeasurement(s);
+        const snr = snrFromDelta(s);
+        drawMarkerReadout(x, y, markerColors[deltaMarker.refId] || "#edf2ee", delta ? [
+          `D${delta.refId}`,
+          `${delta.deltaFreq.toFixed(3)} MHz`,
+          `${delta.deltaDb.toFixed(1)} dBm`,
+          `${delta.dfMHz >= 0 ? "+" : ""}${delta.dfMHz.toFixed(3)} MHz`,
+          `${delta.dDb >= 0 ? "+" : ""}${delta.dDb.toFixed(1)} dB`,
+          snr ? `SNR ${snr.snrDb.toFixed(1)} dB` : ""
+        ] : [`D${deltaMarker.refId}`, ...markerMeasurementLines(deltaMarker.freq, s)]);
       }
     }
     if (bandwidthMarker) {
       const leftX = freqToX(bandwidthMarker.leftFreq, s);
       const rightX = freqToX(bandwidthMarker.rightFreq, s);
       const centerX = freqToX(bandwidthMarker.centerFreq, s);
-      const y = dbToY(bandwidthMarker.targetDb, s);
+      const y = Math.max(plot.top, Math.min(bottom, dbToY(bandwidthMarker.targetDb, s)));
       if (rightX >= plot.left && leftX <= right) {
         ctx.save();
         ctx.strokeStyle = "rgba(255, 209, 102, 0.9)";
@@ -2339,8 +3203,14 @@
         ctx.font = "11px system-ui, sans-serif";
         ctx.textAlign = "center";
         ctx.fillStyle = "#ffd166";
-        ctx.fillText("3 dB", clamp(centerX, plot.left + 24, right - 24), Math.max(plot.top + 14, y - 8));
+        ctx.fillText(formatDropDb(bandwidthMarker.dropDb), clamp(centerX, plot.left + 24, right - 24), Math.max(plot.top + 14, y - 8));
         ctx.restore();
+        drawMarkerReadout(clamp(centerX, plot.left + 24, right - 24), y, "#ffd166", [
+          `${formatDropDb(bandwidthMarker.dropDb)} BW`,
+          `${bandwidthMarker.bandwidthMHz.toFixed(3)} MHz`,
+          `Peak ${bandwidthMarker.peakDb.toFixed(1)} dBm`,
+          `Target ${bandwidthMarker.targetDb.toFixed(1)} dBm`
+        ], { align: "center" });
       }
     }
   }
@@ -2363,8 +3233,7 @@
     if (!peak) return;
     const x = freqToX(peak.freq, s);
     if (x < plot.left || x > el.spectrumCanvas.width - plot.right) return;
-    const amp = getTraceAtFreq(peak.freq, s);
-    const y = Math.max(plot.top, Math.min(el.spectrumCanvas.height - plot.bottom, dbToY(amp, s)));
+    const y = markerYForFreq(peak.freq, s);
     ctx.save();
     ctx.strokeStyle = "rgba(255, 209, 102, 0.92)";
     ctx.setLineDash([3, 5]);
@@ -2373,6 +3242,7 @@
     ctx.lineTo(x, el.spectrumCanvas.height - plot.bottom);
     ctx.stroke();
     markerTriangle(x, y, "#ffd166", "PK");
+    drawMarkerReadout(x, y, "#ffd166", ["PK", ...markerMeasurementLines(peak.freq, s)]);
     ctx.restore();
   }
 
@@ -2449,25 +3319,107 @@
   }
 
   function constellationPoints(modulation) {
-    if (modulation === "BPSK") return [[-1, 0], [1, 0]];
-    if (modulation === "8PSK") {
-      return Array.from({ length: 8 }, (_, i) => {
-        const a = (Math.PI * 2 * i / 8) + Math.PI / 8;
-        return [Math.cos(a), Math.sin(a)];
-      });
-    }
-    return [[0.72, 0.72], [-0.72, 0.72], [-0.72, -0.72], [0.72, -0.72]];
+    const info = MODULATIONS[modulation] || MODULATIONS.QPSK;
+    if (info.family === "qam") return qamConstellationPoints(info.order);
+    const phaseOffset = info.order === 2 ? 0 : Math.PI / info.order;
+    return Array.from({ length: info.order }, (_, i) => {
+      const a = (Math.PI * 2 * i / info.order) + phaseOffset;
+      return [Math.cos(a), Math.sin(a)];
+    });
   }
 
-  function drawIqPlotForModem(modem, canvas, readout) {
-    if (!modem || !canvas || !readout) return;
+  function normalizeConstellation(points) {
+    const meanPower = points.reduce((sum, point) => sum + point[0] * point[0] + point[1] * point[1], 0) / Math.max(points.length, 1);
+    const scale = 1 / Math.sqrt(Math.max(meanPower, 0.001));
+    return points.map((point) => [point[0] * scale, point[1] * scale]);
+  }
+
+  function qamConstellationPoints(order) {
+    const levelsForOrder = {
+      16: [-3, -1, 1, 3],
+      32: [-5, -3, -1, 1, 3, 5],
+      64: [-7, -5, -3, -1, 1, 3, 5, 7]
+    };
+    const levels = levelsForOrder[order] || levelsForOrder[16];
+    let points = [];
+    for (const i of levels) {
+      for (const q of levels) points.push([i, q]);
+    }
+    if (order === 32) {
+      const max = Math.max(...levels.map((level) => Math.abs(level)));
+      points = points.filter(([i, q]) => !(Math.abs(i) === max && Math.abs(q) === max));
+    }
+    return normalizeConstellation(points).slice(0, order);
+  }
+
+  function signalById(id) {
+    if (!id || !state?.signals) return null;
+    return state.signals.find((signal) => signal.id === id) || null;
+  }
+
+  function receiveIqLinkForSignal(signal, rx = {}) {
+    if (!signal) return null;
+    const receiverBandwidthHz = Math.max((Number(rx.bandwidthMHz) || signal.usableMHz || signal.symbolRateMsps || signal.occupiedMHz) * 1_000_000, 1);
+    const txp = state?.transponders?.[signal.transponderId] || transponderForCenter(signal.centerMHz, state?.mode || gameMode);
+    const desired = {
+      ...signal,
+      rolloff: signal.rolloff ?? (WAVEFORMS[signal.waveform] || WAVEFORMS["RRC 0.35"]).rolloff,
+      shoulderDb: signal.shoulderDb ?? (WAVEFORMS[signal.waveform] || WAVEFORMS["RRC 0.35"]).shoulderDb
+    };
+    const noiseDensityDbmHz = environmentalNoiseDensityDbmHz(playerId, desired, txp);
+    const noiseDbm = noiseDensityDbmHz + 10 * Math.log10(receiverBandwidthHz);
+    const noiseMw = dbmToMw(noiseDbm);
+    let interferenceMw = 0;
+    for (const other of state.signals || []) {
+      if (other.id === desired.id) continue;
+      interferenceMw += integratedInterferenceMw(other, desired) * interferenceCoupling(other, desired);
+    }
+    const cMw = dbmToMw(desired.powerDbm);
+    const cnirDb = ratioToDb(cMw / Math.max(noiseMw + interferenceMw, 1e-18)) +
+      otaPenaltyDb(playerId, {
+        ...desired,
+        symbolRateMsps: desired.symbolRateMsps || desired.usableMHz || desired.occupiedMHz,
+        modulation: desired.modulation
+      });
+    const modulation = MODULATIONS[desired.modulation] || MODULATIONS.QPSK;
+    const fec = FEC_RATES[desired.fec] || FEC_RATES["3/4"];
+    const bitRateBps = Math.max((desired.dataRateMbps || 1) * 1_000_000, 1);
+    const ebNoDb = cnirDb + 10 * Math.log10(receiverBandwidthHz / bitRateBps);
+    const requiredEbNoDb = (REQUIRED_EBNO_DB[desired.modulation]?.[desired.fec] ?? 4.5) +
+      ((WAVEFORMS[desired.waveform] || WAVEFORMS["RRC 0.35"]).acquisitionDb || 0);
+    const esNoDb = ebNoDb + 10 * Math.log10(modulation.bitsPerSymbol * fec.rate);
+    const marginDb = ebNoDb - requiredEbNoDb;
+    const interferenceToNoiseDb = interferenceMw > 0 ? ratioToDb(interferenceMw / noiseMw) : null;
+    const jamFraction = clamp(Math.max(0, -marginDb) / 9 + Math.max(0, (interferenceToNoiseDb ?? -20) + 2) / 18, 0, 1);
+    const goodput = clamp(1 - jamFraction, 0, 1);
+    return {
+      ebNoDb,
+      requiredEbNoDb,
+      marginDb,
+      cnirDb,
+      esNoDb,
+      evmPercent: 100 / Math.sqrt(dbToRatio(Math.max(esNoDb, -40))),
+      jamFraction,
+      goodput,
+      erasureLoss: jamFraction * 0.35,
+      noiseDensityDbmHz,
+      interferenceToNoiseDb
+    };
+  }
+
+  function drawIqPlot(profile, canvas, readout) {
+    if (!profile || !canvas || !readout) return;
     const c = canvas.getContext("2d", { alpha: false });
     const w = canvas.width;
     const h = canvas.height;
     const cx = w / 2;
     const cy = h / 2;
     const scale = Math.min(w, h) * 0.36;
-    const link = modem?.dataSelected ? state?.players[playerId]?.link : null;
+    const link = profile.link || null;
+    const iqModulation = profile.modulation || "QPSK";
+    const iqFec = profile.fec || "-";
+    const clean = Boolean(profile.clean);
+    const locked = Boolean(profile.locked);
 
     c.fillStyle = "#030504";
     c.fillRect(0, 0, w, h);
@@ -2484,30 +3436,43 @@
     c.arc(cx, cy, scale, 0, Math.PI * 2);
     c.stroke();
 
-    const margin = Number.isFinite(link?.marginDb) ? link.marginDb : 8;
-    const evm = Number.isFinite(link?.evmPercent) ? link.evmPercent / 100 : 0.08;
-    const jamFraction = Number.isFinite(link?.jamFraction) ? link.jamFraction : 0.08;
+    const margin = clean ? 18 : Number.isFinite(link?.marginDb) ? link.marginDb : locked ? 3 : -4;
+    const evm = clean ? 0.018 : Number.isFinite(link?.evmPercent) ? link.evmPercent / 100 : locked ? 0.14 : 0.32;
+    const jamFraction = clean ? 0 : Number.isFinite(link?.jamFraction) ? link.jamFraction : locked ? 0.1 : 0.38;
+    const ambientNoise = clean ? 0.015 : Number.isFinite(link?.noiseDensityDbmHz) ? clamp((link.noiseDensityDbmHz + 142) / 8, 0, 1) : locked ? 0.34 : 0.58;
+    const erasureNoise = clean ? 0 : Number.isFinite(link?.erasureLoss) ? link.erasureLoss : 0;
+    const modulationInfo = MODULATIONS[iqModulation] || MODULATIONS.QPSK;
+    const complexity = clamp((modulationInfo.bitsPerSymbol - 1) / 5, 0, 1);
     const t = performance.now() / 1000;
-    const phaseJitter = 0.035 + jamFraction * 0.16 + Math.max(0, -margin) * 0.018;
-    const sigma = Math.max(0.07, Math.min(1.05, evm * 0.52 + Math.max(0, -margin) * 0.052 + jamFraction * 0.52));
-    const rotation = Math.max(-0.55, Math.min(0.55, (link?.interferenceToNoiseDb || 0) * 0.014 + Math.sin(t * 1.7 + modem.id) * phaseJitter));
-    const gainWobble = 1 + 0.08 * Math.sin(t * 2.3 + modem.centerMHz);
-    const pts = constellationPoints(modem.modulation);
-    const unreadable = jamFraction > 0.56 || margin < -1.6;
+    const phaseJitter = clean
+      ? 0.004 + complexity * 0.004
+      : 0.04 + ambientNoise * 0.035 + jamFraction * 0.14 + Math.max(0, -margin) * 0.018;
+    const baseSigma = clean
+      ? 0.012 + complexity * 0.01
+      : evm * 0.32 + ambientNoise * 0.08 + Math.max(0, -margin) * 0.045 + jamFraction * 0.36 + erasureNoise * 0.14;
+    const sigma = Math.max(clean ? 0.012 : 0.05, Math.min(clean ? 0.05 : 1.08, baseSigma * (1 + complexity * (clean ? 0.16 : 0.32))));
+    const phaseOffset = clean ? 0 : Math.max(-0.38, Math.min(0.38, (link?.interferenceToNoiseDb || 0) * 0.01 + Math.sin((profile.centerMHz || 0) * 0.31) * 0.045));
+    const gainWobble = clean ? 1 : 1 + 0.024 * Math.sin(t * 0.37 + (profile.centerMHz || 0));
+    const pts = constellationPoints(iqModulation);
+    const unreadable = !clean && (jamFraction > 0.62 || margin < -2.2);
+    const sampleCount = Math.max(430, pts.length * 14);
+    const pointRadius = unreadable ? 1.45 : pts.length >= 32 ? 1.1 : pts.length >= 16 ? 1.35 : pts.length >= 8 ? 1.65 : 2.05;
 
     c.fillStyle = unreadable ? "rgba(255, 93, 105, 0.44)" : "rgba(111, 194, 255, 0.62)";
-    for (let i = 0; i < 430; i++) {
+    for (let i = 0; i < sampleCount; i++) {
       const p = pts[Math.floor(Math.random() * pts.length)];
       const nx = (Math.random() + Math.random() + Math.random() - 1.5) * sigma;
       const ny = (Math.random() + Math.random() + Math.random() - 1.5) * sigma;
-      const radial = 1 + (Math.random() - 0.5) * (0.11 + jamFraction * 0.32);
-      const burst = Math.random() < jamFraction * 0.18 ? (Math.random() - 0.5) * 2.5 : 0;
+      const radial = clean ? 1 + (Math.random() - 0.5) * 0.012 : 1 + (Math.random() - 0.5) * (0.12 + ambientNoise * 0.06 + jamFraction * 0.24);
+      const burstChance = clean ? 0 : clamp(jamFraction * 0.16 + erasureNoise * 0.14, 0, 0.34);
+      const burst = Math.random() < burstChance ? (Math.random() - 0.5) * (2.4 + erasureNoise * 1.2) : 0;
       const noisyX = p[0] * radial * gainWobble + nx + (unreadable ? (Math.random() - 0.5) * 1.05 : 0) + burst;
       const noisyY = p[1] * radial / gainWobble + ny + (unreadable ? (Math.random() - 0.5) * 1.05 : 0) - burst * 0.35;
-      const rx = noisyX * Math.cos(rotation) - noisyY * Math.sin(rotation);
-      const ry = noisyX * Math.sin(rotation) + noisyY * Math.cos(rotation);
+      const samplePhase = phaseOffset + (Math.random() + Math.random() + Math.random() - 1.5) * phaseJitter * (0.5 + jamFraction * 0.7);
+      const rx = noisyX * Math.cos(samplePhase) - noisyY * Math.sin(samplePhase);
+      const ry = noisyX * Math.sin(samplePhase) + noisyY * Math.cos(samplePhase);
       c.beginPath();
-      c.arc(cx + rx * scale, cy - ry * scale, unreadable ? 1.65 : 2.05, 0, Math.PI * 2);
+      c.arc(cx + rx * scale, cy - ry * scale, pointRadius, 0, Math.PI * 2);
       c.fill();
     }
 
@@ -2515,16 +3480,67 @@
     c.font = "12px system-ui, sans-serif";
     c.fillText("I", w - 24, cy - 8);
     c.fillText("Q", cx + 8, 26);
-    if (link?.ebNoDb !== null && link?.ebNoDb !== undefined) {
+    if (clean) {
+      readout.textContent = `${iqModulation} ${iqFec} | TX clean preview | ${pts.length} ideal points`;
+    } else if (link?.ebNoDb !== null && link?.ebNoDb !== undefined) {
       const lock = unreadable ? "Unlock likely" : margin >= 0 ? "Locked" : "Marginal";
-      readout.textContent = `${modem.modulation} ${modem.fec} | ${lock} | Eb/No ${link.ebNoDb.toFixed(1)} dB | jam ${(link.jamFraction * 100).toFixed(0)}% | goodput ${(link.goodput * 100).toFixed(0)}%`;
+      readout.textContent = `${iqModulation} ${iqFec} | ${lock} | Eb/No ${link.ebNoDb.toFixed(1)} dB | jam ${(link.jamFraction * 100).toFixed(0)}% | goodput ${(link.goodput * 100).toFixed(0)}%`;
     } else {
-      readout.textContent = `${modem.modulation} ${modem.fec} transmit constellation preview. Link math is shown for the selected data modem.`;
+      readout.textContent = `${iqModulation} ${iqFec} | ${locked ? "RX noise preview" : "RX searching"} | ${pts.length} points`;
     }
+  }
+
+  function drawIqPlotForModem(modem, canvas, readout) {
+    if (!modem) return;
+    drawIqPlot({
+      modulation: modem.modulation,
+      fec: modem.fec,
+      clean: true,
+      locked: true,
+      centerMHz: modem.centerMHz
+    }, canvas, readout);
+  }
+
+  function drawIqPlotForDataRx(rx, canvas, readout) {
+    if (!rx) return;
+    const signal = signalById(rx.matchedSignalId);
+    drawIqPlot({
+      modulation: rx.modulation,
+      fec: rx.fec,
+      clean: false,
+      locked: Boolean(rx.locked),
+      link: rx.locked ? state?.players[playerId]?.link || receiveIqLinkForSignal(signal, rx) : null,
+      centerMHz: rx.centerMHz
+    }, canvas, readout);
+  }
+
+  function drawIqPlotForRx(rx, canvas, readout) {
+    if (!rx) return;
+    const signal = signalById(rx.matchedSignalId);
+    drawIqPlot({
+      modulation: signal?.modulation || rx.modulation,
+      fec: signal?.fec || "-",
+      clean: false,
+      locked: Boolean(rx.locked),
+      link: rx.locked ? receiveIqLinkForSignal(signal, rx) : null,
+      centerMHz: rx.centerMHz
+    }, canvas, readout);
   }
 
   function drawInlineIqPlots() {
     if (!state) return;
+    const dataRxPanel = document.querySelector('#data-rx-card [data-role="iq-panel"]');
+    if (dataRxPanel && !dataRxPanel.hidden) {
+      drawIqPlotForDataRx(state.yourDataRx, dataRxPanel.querySelector('[data-role="iq-canvas"]'), dataRxPanel.querySelector('[data-role="iq-readout"]'));
+    }
+    document.querySelectorAll(".rx-card").forEach((card) => {
+      if (card.id === "data-rx-card") return;
+      const panel = card.querySelector('[data-role="iq-panel"]');
+      if (!panel || panel.hidden) return;
+      const rxId = Number(card.dataset.rxId);
+      const rx = state.yourRxModems.find((item) => item.id === rxId);
+      drawIqPlotForRx(rx, panel.querySelector('[data-role="iq-canvas"]'), panel.querySelector('[data-role="iq-readout"]'));
+    });
     document.querySelectorAll(".modem-card").forEach((card) => {
       const panel = card.querySelector('[data-role="iq-panel"]');
       if (!panel || panel.hidden) return;
@@ -2606,8 +3622,8 @@
     activeMarker = refId;
   }
 
-  function set3DbMarker(freq = reticle?.freq || peak?.freq || settings().center) {
-    bandwidthMarker = measure3DbBandwidth(freq, settings());
+  function setNDbMarker(freq = reticle?.freq || peak?.freq || settings().center) {
+    bandwidthMarker = measureNDbBandwidth(freq, settings());
   }
 
   function hideMarkerMenu() {
@@ -2647,7 +3663,7 @@
     const dividerB = document.createElement("div");
     dividerB.className = "marker-menu-divider";
     menu.appendChild(dividerB);
-    menu.appendChild(markerMenuButton("3 dB Bandwidth", () => set3DbMarker(markerContextFreq)));
+    menu.appendChild(markerMenuButton("N dB Bandwidth", () => setNDbMarker(markerContextFreq)));
     menu.appendChild(markerMenuButton(`SNR Noise vs M${activeMarker}`, () => setDeltaMarker(activeMarker, markerContextFreq), !markers[activeMarker]));
     menu.appendChild(markerMenuButton("Clear Delta", () => { deltaMarker = null; }, !deltaMarker));
     menu.hidden = false;
@@ -2661,7 +3677,8 @@
     const txp = transponderForView();
     if (!txp) return;
     el.centerFreq.value = ((txp.minMHz + txp.maxMHz) / 2).toFixed(2);
-    el.span.value = (state?.phase === "prep" ? txp.maxMHz - txp.minMHz : Math.min(80, txp.maxMHz - txp.minMHz + 6)).toFixed(2);
+    const span = state?.phase === "prep" ? txp.maxMHz - txp.minMHz : Math.min(state?.battleSpanMHz || 80, txp.maxMHz - txp.minMHz + 6);
+    el.span.value = span.toFixed(2);
     resetAcquisition();
   }
 
@@ -2672,6 +3689,10 @@
   }
 
   el.showWaterfall.addEventListener("change", () => { waterfall.rows = []; waterfall.lastSerial = 0; });
+  el.ndbDown.addEventListener("change", () => {
+    el.ndbDown.value = markerDropDb().toFixed(markerDropDb() % 1 ? 1 : 0);
+    if (bandwidthMarker?.seedFreq !== undefined) bandwidthMarker = measureNDbBandwidth(bandwidthMarker.seedFreq, settings());
+  });
   el.peakSearch.addEventListener("click", () => findPeak(settings()));
   el.clearPeak.addEventListener("click", () => { peak = null; });
   for (const id of [1, 2, 3]) {
@@ -2790,9 +3811,10 @@
   }
 
   function startGame() {
+    closeNetworkConnection();
     configurePlayersForMode(gameMode);
     playerId = "alpha";
-    game = createGame(el.difficulty.value);
+    game = createGame(el.difficulty.value, gameSpeedValue());
     state = stateFor(playerId);
     started = true;
     lobby.hidden = true;
@@ -2807,10 +3829,19 @@
   }
 
   addWheelInputs();
+  updateSpeedSummary();
   updateLobbyMode();
   el.soloMode.addEventListener("click", () => setGameMode("solo"));
   el.multiMode.addEventListener("click", () => setGameMode("multiplayer"));
+  el.sandboxMode.addEventListener("click", () => setGameMode("sandbox"));
+  el.gameSpeed.addEventListener("change", updateSpeedSummary);
   el.localStart.addEventListener("click", startGame);
+  el.hostNetwork.addEventListener("click", hostNetworkGame);
+  el.joinNetwork.addEventListener("click", joinNetworkGame);
+  el.roomCode.addEventListener("input", () => {
+    const next = cleanRoomCode(el.roomCode.value);
+    if (el.roomCode.value !== next) el.roomCode.value = next;
+  });
   el.switchAlpha.addEventListener("click", () => switchPlayer("alpha"));
   el.switchBravo.addEventListener("click", () => switchPlayer("bravo"));
   el.readyPhase.addEventListener("click", () => {
