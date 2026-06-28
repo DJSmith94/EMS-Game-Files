@@ -10,7 +10,9 @@
   gameRoot.hidden = true;
 
   const ids = [
-    "localStart", "soloMode", "multiMode", "sandboxMode", "difficultyPicker", "difficulty", "speedPicker", "gameSpeed", "speedSummary", "playerTitle", "phaseReadout", "timerReadout", "linkReadout", "resetRound", "readyPhase",
+    "localStart", "soloMode", "multiMode", "sandboxMode", "difficultyPicker", "difficulty", "speedPicker", "gameSpeed", "speedSummary",
+    "customSettingsToggle", "customSettingsPanel", "customModemCount", "customPowerBank", "customMinBandwidth", "customMaxBandwidth", "customTransponderCount", "customSettingsSummary",
+    "playerTitle", "phaseReadout", "timerReadout", "linkReadout", "resetRound", "readyPhase",
     "networkPanel", "hostNetwork", "joinNetwork", "roomCode", "networkStatus",
     "playerSwitch", "switchAlpha", "switchBravo",
     "scoreAlpha", "scoreBravo", "alphaStatus", "bravoStatus", "lockNotice",
@@ -32,6 +34,23 @@
   const plot = { left: 64, right: 18, top: 18, bottom: 48 };
   const markerColors = { 1: "#65e6ad", 2: "#ffd166", 3: "#c79bff" };
   const waterfall = { rows: [], maxRows: el.waterfallCanvas.height, lastSerial: 0 };
+  const WATERFALL_PALETTE = [
+    { at: 0.00, rgb: [2, 4, 10] },
+    { at: 0.06, rgb: [8, 11, 28] },
+    { at: 0.12, rgb: [16, 25, 64] },
+    { at: 0.18, rgb: [22, 52, 112] },
+    { at: 0.25, rgb: [17, 91, 151] },
+    { at: 0.32, rgb: [13, 132, 169] },
+    { at: 0.40, rgb: [24, 171, 153] },
+    { at: 0.49, rgb: [73, 202, 112] },
+    { at: 0.58, rgb: [155, 224, 73] },
+    { at: 0.67, rgb: [239, 219, 70] },
+    { at: 0.76, rgb: [252, 160, 55] },
+    { at: 0.84, rgb: [235, 83, 53] },
+    { at: 0.91, rgb: [200, 45, 111] },
+    { at: 0.96, rgb: [229, 122, 211] },
+    { at: 1.00, rgb: [255, 242, 226] }
+  ];
 
   let state = null;
   let trace = new Float32Array(el.spectrumCanvas.width);
@@ -76,10 +95,26 @@
     slow: { id: "slow", label: "Slow", fileBits: 6_000_000_000, fileLabel: "6 Gb", battleMs: 900_000 }
   };
   const DATA_TRANSFER_SCALE = 0.45;
+  const TRANSPONDER_WIDTH_MHZ = 36;
+  const TRANSPONDER_GUARD_MHZ = 4;
   const SYSTEM_POWER_PROFILES = {
     solo: { outputLimitDbm: -56, occupancySoftMHz: 24, modemMinDbm: -80, modemMaxDbm: -45 },
     multiplayer: { outputLimitDbm: -48, occupancySoftMHz: 64, modemMinDbm: -80, modemMaxDbm: -38 },
     sandbox: { outputLimitDbm: -34, occupancySoftMHz: 160, modemMinDbm: -90, modemMaxDbm: -30 }
+  };
+  const CUSTOM_SETTING_LIMITS = {
+    modemCount: { min: 1, max: 8 },
+    powerBankDbm: { min: -70, max: -24 },
+    signalBandwidthMHz: { min: 0.2, max: TRANSPONDER_WIDTH_MHZ },
+    transponderCount: { min: 2, max: 8 }
+  };
+  const CUSTOM_SETTING_DEFAULTS = {
+    enabled: false,
+    modemCount: 4,
+    powerBankDbm: -48,
+    minSignalBandwidthMHz: 0.5,
+    maxSignalBandwidthMHz: 24,
+    transponderCount: 4
   };
 
   const TRANSPONDERS = {
@@ -92,6 +127,8 @@
     charlie: { id: "charlie", label: "C", minMHz: 2320, maxMHz: 2356, color: "#6fc2ff", awgnDensityDbmHz: -137.2, pedestalRollMHz: 1.6, edgeLiftDb: 2.2 },
     delta: { id: "delta", label: "D", minMHz: 2360, maxMHz: 2396, color: "#c79bff", awgnDensityDbmHz: -137.2, pedestalRollMHz: 1.6, edgeLiftDb: 2.2 }
   };
+  const TRANSPONDER_IDS = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel"];
+  const TRANSPONDER_COLORS = ["#65e6ad", "#ff8f70", "#6fc2ff", "#c79bff", "#ffd166", "#6ee7f9", "#f6a6d6", "#a4f48f"];
 
   const PLAYERS = {
     alpha: { id: "alpha", name: "Player", transponderId: "alpha", opponentId: "bravo", color: "#65e6ad", ai: false },
@@ -103,24 +140,38 @@
     return mode === "multiplayer" || mode === "sandbox" ? mode : "solo";
   }
 
-  function transpondersForMode(mode = gameMode) {
+  function transpondersForMode(mode = gameMode, settings = currentCustomSettings()) {
+    if (customSettingsActive(settings)) return generatedTransponders(settings.transponderCount);
     return normalizedMode(mode) === "multiplayer" ? MULTIPLAYER_TRANSPONDERS : TRANSPONDERS;
   }
 
-  function transponderList(mode = gameMode) {
-    return Object.values(transpondersForMode(mode)).sort((a, b) => a.minMHz - b.minMHz);
+  function transponderList(mode = gameMode, settings = currentCustomSettings()) {
+    return Object.values(transpondersForMode(mode, settings)).sort((a, b) => a.minMHz - b.minMHz);
   }
 
-  function transponderById(id, mode = gameMode) {
-    return transpondersForMode(mode)[id] || TRANSPONDERS[id] || TRANSPONDERS.alpha;
+  function transponderById(id, mode = gameMode, settings = currentCustomSettings()) {
+    return transpondersForMode(mode, settings)[id] || TRANSPONDERS[id] || TRANSPONDERS.alpha;
   }
 
-  function battleSpanMHzForMode(mode = gameMode) {
+  function battleSpanMHzForMode(mode = gameMode, settings = currentCustomSettings()) {
+    if (customSettingsActive(settings)) return settings.transponderCount * (TRANSPONDER_WIDTH_MHZ + TRANSPONDER_GUARD_MHZ);
     return normalizedMode(mode) === "multiplayer" ? 160 : 80;
   }
 
-  function powerProfileForMode(mode = gameMode) {
-    return SYSTEM_POWER_PROFILES[normalizedMode(mode)] || SYSTEM_POWER_PROFILES.solo;
+  function powerProfileForMode(mode = gameMode, settings = currentCustomSettings()) {
+    const base = SYSTEM_POWER_PROFILES[normalizedMode(mode)] || SYSTEM_POWER_PROFILES.solo;
+    if (!customSettingsActive(settings)) return base;
+    const spanMHz = battleSpanMHzForMode(mode, settings);
+    const occupancySoftMHz = Math.min(
+      spanMHz,
+      Math.max(base.occupancySoftMHz, settings.maxSignalBandwidthMHz, settings.maxSignalBandwidthMHz * settings.modemCount * 0.75)
+    );
+    return {
+      outputLimitDbm: settings.powerBankDbm,
+      occupancySoftMHz,
+      modemMinDbm: -90,
+      modemMaxDbm: clamp(settings.powerBankDbm + 10, -80, -24)
+    };
   }
 
   const WAVEFORMS = {
@@ -160,8 +211,11 @@
     "32QAM": { "1/2": 8.5, "2/3": 10.5, "3/4": 12.0, "5/6": 13.6, "7/8": 14.5 },
     "64QAM": { "1/2": 10.6, "2/3": 12.8, "3/4": 14.6, "5/6": 16.2, "7/8": 17.2 }
   };
+  const AI_MOD_ROBUSTNESS = ["BPSK", "QPSK", "8PSK", "16QAM", "32QAM", "64QAM"];
+  const AI_FEC_ROBUSTNESS = ["1/2", "2/3", "3/4", "5/6", "7/8"];
+  const AI_WAVEFORM_ROBUSTNESS = ["DVB-S2 0.20", "DVB-S2 0.25", "RRC 0.35"];
 
-  let game = createGame("medium");
+  let game = null;
 
   function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
@@ -181,6 +235,110 @@
 
   function dbToRatio(db) {
     return 10 ** (db / 10);
+  }
+
+  function roundInt(value, fallback) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? Math.round(numeric) : fallback;
+  }
+
+  function roundTo(value, digits = 3) {
+    const scale = 10 ** digits;
+    return Math.round(Number(value) * scale) / scale;
+  }
+
+  function currentCustomSettings() {
+    return game?.customSettings || null;
+  }
+
+  function normalizeCustomSettings(settings = {}) {
+    const enabled = Boolean(settings.enabled);
+    const modemCount = clamp(roundInt(settings.modemCount, CUSTOM_SETTING_DEFAULTS.modemCount), CUSTOM_SETTING_LIMITS.modemCount.min, CUSTOM_SETTING_LIMITS.modemCount.max);
+    const powerBankDbm = roundTo(clamp(Number(settings.powerBankDbm) || CUSTOM_SETTING_DEFAULTS.powerBankDbm, CUSTOM_SETTING_LIMITS.powerBankDbm.min, CUSTOM_SETTING_LIMITS.powerBankDbm.max), 1);
+    let minSignalBandwidthMHz = roundTo(clamp(Number(settings.minSignalBandwidthMHz) || CUSTOM_SETTING_DEFAULTS.minSignalBandwidthMHz, CUSTOM_SETTING_LIMITS.signalBandwidthMHz.min, CUSTOM_SETTING_LIMITS.signalBandwidthMHz.max), 3);
+    let maxSignalBandwidthMHz = roundTo(clamp(Number(settings.maxSignalBandwidthMHz) || CUSTOM_SETTING_DEFAULTS.maxSignalBandwidthMHz, CUSTOM_SETTING_LIMITS.signalBandwidthMHz.min, CUSTOM_SETTING_LIMITS.signalBandwidthMHz.max), 3);
+    if (minSignalBandwidthMHz > maxSignalBandwidthMHz) {
+      const swap = minSignalBandwidthMHz;
+      minSignalBandwidthMHz = maxSignalBandwidthMHz;
+      maxSignalBandwidthMHz = swap;
+    }
+    const transponderCount = clamp(roundInt(settings.transponderCount, CUSTOM_SETTING_DEFAULTS.transponderCount), CUSTOM_SETTING_LIMITS.transponderCount.min, CUSTOM_SETTING_LIMITS.transponderCount.max);
+    return { enabled, modemCount, powerBankDbm, minSignalBandwidthMHz, maxSignalBandwidthMHz, transponderCount };
+  }
+
+  function readCustomSettings() {
+    return normalizeCustomSettings({
+      enabled: Boolean(el.customSettingsToggle?.checked),
+      modemCount: el.customModemCount?.value,
+      powerBankDbm: el.customPowerBank?.value,
+      minSignalBandwidthMHz: el.customMinBandwidth?.value,
+      maxSignalBandwidthMHz: el.customMaxBandwidth?.value,
+      transponderCount: el.customTransponderCount?.value
+    });
+  }
+
+  function customSettingsActive(settings = currentCustomSettings()) {
+    return Boolean(settings?.enabled);
+  }
+
+  function writeCustomSettingsToInputs(settings = readCustomSettings()) {
+    if (!el.customSettingsToggle) return;
+    el.customSettingsToggle.checked = settings.enabled;
+    el.customModemCount.value = settings.modemCount;
+    el.customPowerBank.value = settings.powerBankDbm;
+    el.customMinBandwidth.value = settings.minSignalBandwidthMHz;
+    el.customMaxBandwidth.value = settings.maxSignalBandwidthMHz;
+    el.customTransponderCount.value = settings.transponderCount;
+  }
+
+  function customSettingsSummaryText(settings) {
+    return settings.enabled
+      ? `${settings.modemCount} TX modems/player | ${settings.transponderCount} transponders | ${settings.minSignalBandwidthMHz}-${settings.maxSignalBandwidthMHz} MHz signals | ${settings.powerBankDbm} dBm bank`
+      : "Using the selected mode preset.";
+  }
+
+  function updateCustomSettingsUi() {
+    const settings = readCustomSettings();
+    writeCustomSettingsToInputs(settings);
+    const enabled = settings.enabled;
+    if (el.customSettingsPanel) el.customSettingsPanel.hidden = !enabled;
+    for (const input of [el.customModemCount, el.customPowerBank, el.customMinBandwidth, el.customMaxBandwidth, el.customTransponderCount]) {
+      if (input) input.disabled = !enabled;
+    }
+    if (el.customSettingsSummary) {
+      el.customSettingsSummary.textContent = customSettingsSummaryText(settings);
+    }
+    updateSpeedSummary();
+  }
+
+  function generatedTransponders(count) {
+    const total = clamp(roundInt(count, 2), CUSTOM_SETTING_LIMITS.transponderCount.min, CUSTOM_SETTING_LIMITS.transponderCount.max);
+    const txps = {};
+    for (let index = 0; index < total; index++) {
+      const id = TRANSPONDER_IDS[index] || `txp${index + 1}`;
+      const minMHz = 2240 + index * (TRANSPONDER_WIDTH_MHZ + TRANSPONDER_GUARD_MHZ);
+      const maxMHz = minMHz + TRANSPONDER_WIDTH_MHZ;
+      txps[id] = {
+        id,
+        label: String.fromCharCode(65 + index),
+        minMHz,
+        maxMHz,
+        color: TRANSPONDER_COLORS[index % TRANSPONDER_COLORS.length],
+        awgnDensityDbmHz: -137.2,
+        pedestalRollMHz: 1.6,
+        edgeLiftDb: 2.2
+      };
+    }
+    return txps;
+  }
+
+  function modemCountForSettings(settings = currentCustomSettings()) {
+    return customSettingsActive(settings) ? settings.modemCount : 4;
+  }
+
+  function signalBandwidthLimits(settings = currentCustomSettings()) {
+    if (!customSettingsActive(settings)) return { minMHz: 0, maxMHz: Infinity };
+    return { minMHz: settings.minSignalBandwidthMHz, maxMHz: settings.maxSignalBandwidthMHz };
   }
 
   function configurePlayersForMode(mode) {
@@ -243,9 +401,13 @@
 
   function formatSpeedSummary(speed = gameSpeedValue()) {
     const profile = speedProfile(speed);
-    if (gameMode === "sandbox") return "Sandbox: full 80 MHz analyzer with 4-6 randomized signals, relaxed power limits, and free-form transmit experiments.";
-    if (gameMode === "multiplayer") return `${profile.label}: ${profile.fileLabel} pseudo file over a 160 MHz battle area with four 36 MHz transponders, 4 MHz guard gaps, and extra system power.`;
-    return `${profile.label}: ${profile.fileLabel} pseudo file with a ${Math.round(profile.battleMs / 60_000)} minute live cap. Eb/No, FEC loss, and receiver tuning control progress.`;
+    const custom = readCustomSettings();
+    const customSuffix = custom.enabled
+      ? ` Custom: ${custom.transponderCount} transponders, ${custom.modemCount} TX modems/player, ${custom.minSignalBandwidthMHz}-${custom.maxSignalBandwidthMHz} MHz signal limits, ${custom.powerBankDbm} dBm bank.`
+      : "";
+    if (gameMode === "sandbox") return `Sandbox: full analyzer with 4-6 randomized signals, relaxed power limits, and free-form transmit experiments.${customSuffix}`;
+    if (gameMode === "multiplayer") return `${profile.label}: ${profile.fileLabel} pseudo file over the selected battle area with extra system power.${customSuffix}`;
+    return `${profile.label}: ${profile.fileLabel} pseudo file with a ${Math.round(profile.battleMs / 60_000)} minute live cap. Eb/No, FEC loss, and receiver tuning control progress.${customSuffix}`;
   }
 
   function updateSpeedSummary() {
@@ -484,11 +646,11 @@
     return items[Math.floor(Math.random() * items.length)];
   }
 
-  function sandboxCarrierPowerDbm(modulationName, fecName, waveformName, symbolRateMsps, occupiedMHz, centerMHz) {
+  function sandboxCarrierPowerDbm(modulationName, fecName, waveformName, symbolRateMsps, occupiedMHz, centerMHz, customSettings = currentCustomSettings()) {
     const waveform = WAVEFORMS[waveformName] || WAVEFORMS["RRC 0.35"];
     const modulation = MODULATIONS[modulationName] || MODULATIONS.QPSK;
     const fec = FEC_RATES[fecName] || FEC_RATES["3/4"];
-    const txp = transponderForCenter(centerMHz);
+    const txp = transponderForCenter(centerMHz, gameMode, customSettings);
     const receiverBandwidthHz = Math.max(symbolRateMsps * 1_000_000, 1);
     const bitRateBps = Math.max(symbolRateMsps * modulation.bitsPerSymbol * fec.rate * 1_000_000, 1);
     const requiredEbNoDb = (REQUIRED_EBNO_DB[modulationName]?.[fecName] ?? 4.5) + waveform.acquisitionDb;
@@ -504,9 +666,12 @@
     return Number(clamp(Math.max(naturalPowerDbm, neededPowerDbm), -68, -45).toFixed(1));
   }
 
-  function sandboxSignalFor(index, usedIntervals) {
-    const range = battleRange();
-    const occupiedMHz = randomBetween(1.8, 14.5);
+  function sandboxSignalFor(index, usedIntervals, customSettings = currentCustomSettings()) {
+    const range = battleRange(gameMode, customSettings);
+    const bandwidthLimits = signalBandwidthLimits(customSettings);
+    const minWidthMHz = customSettingsActive(customSettings) ? bandwidthLimits.minMHz : 1.8;
+    const maxWidthMHz = customSettingsActive(customSettings) ? bandwidthLimits.maxMHz : 14.5;
+    const occupiedMHz = randomBetween(minWidthMHz, Math.max(minWidthMHz, Math.min(maxWidthMHz, TRANSPONDER_WIDTH_MHZ * 0.94)));
     const waveform = waveformForWidth(occupiedMHz);
     const rolloff = WAVEFORMS[waveform].rolloff;
     const symbolRateMsps = occupiedMHz / (1 + rolloff);
@@ -533,7 +698,7 @@
       ownerId: "bravo",
       ownerName: "Signal Field",
       modemId: index,
-      transponderId: transponderForCenter(centerMHz).id,
+      transponderId: transponderForCenter(centerMHz, gameMode, customSettings).id,
       centerMHz: Number(centerMHz.toFixed(3)),
       lowMHz: Number(lowMHz.toFixed(3)),
       highMHz: Number(highMHz.toFixed(3)),
@@ -547,17 +712,17 @@
       shoulderDb: WAVEFORMS[waveform].shoulderDb,
       modulation,
       fec,
-      powerDbm: sandboxCarrierPowerDbm(modulation, fec, waveform, symbolRateMsps, occupiedMHz, centerMHz),
+      powerDbm: sandboxCarrierPowerDbm(modulation, fec, waveform, symbolRateMsps, occupiedMHz, centerMHz, customSettings),
       powerBackoffDb: 0,
       isData: true,
       sandbox: true
     };
   }
 
-  function generateSandboxSignals() {
+  function generateSandboxSignals(customSettings = currentCustomSettings()) {
     const count = 4 + Math.floor(Math.random() * 3);
     const usedIntervals = [];
-    return Array.from({ length: count }, (_, index) => sandboxSignalFor(index + 1, usedIntervals))
+    return Array.from({ length: count }, (_, index) => sandboxSignalFor(index + 1, usedIntervals, customSettings))
       .sort((a, b) => a.centerMHz - b.centerMHz);
   }
 
@@ -584,13 +749,15 @@
     });
   }
 
-  function createGame(difficulty = "medium", speed = DEFAULT_GAME_SPEED) {
+  function createGame(difficulty = "medium", speed = DEFAULT_GAME_SPEED, customSettings = readCustomSettings()) {
     const now = Date.now();
     const selectedSpeed = speedProfile(speed);
+    const settings = normalizeCustomSettings(customSettings);
     const sandbox = gameMode === "sandbox";
     const nextGame = {
       roundId: Math.random().toString(36).slice(2, 10),
       mode: gameMode,
+      customSettings: settings,
       speed: selectedSpeed.id,
       packageBits: selectedSpeed.fileBits,
       battleDurationMs: selectedSpeed.battleMs,
@@ -600,7 +767,7 @@
       ready: { alpha: sandbox, bravo: sandbox || PLAYERS.bravo.ai },
       winnerId: null,
       difficulty: DIFFICULTY_PROFILES[difficulty] ? difficulty : "medium",
-      sandboxSignals: sandbox ? generateSandboxSignals() : [],
+      sandboxSignals: sandbox ? generateSandboxSignals(settings) : [],
       ai: {
         lastActionAt: 0,
         nextLookAt: now + 999999,
@@ -611,6 +778,10 @@
         lastHumanGoodput: 1,
         hopIndex: 0,
         lastEvadeAt: 0,
+        lastSurvivalActionAt: 0,
+        dataOpeningSeeded: false,
+        crossBandDataUnlocked: false,
+        lastSurvivalReason: null,
         lastJammerObservationAt: 0,
         pendingDataRxAt: null,
         pendingDataRxPatch: null,
@@ -620,37 +791,43 @@
         pendingEvadePatch: null
       },
       players: {
-        alpha: createPlayerState("alpha", gameMode),
-        bravo: createPlayerState("bravo", gameMode)
+        alpha: createPlayerState("alpha", gameMode, settings),
+        bravo: createPlayerState("bravo", gameMode, settings)
       }
     };
     if (sandbox) configureSandboxReceivers(nextGame);
     return nextGame;
   }
 
-  function createPlayerState(id, mode = gameMode) {
+  function createPlayerState(id, mode = gameMode, customSettings = currentCustomSettings()) {
     const player = PLAYERS[id];
-    const txp = transponderById(player.transponderId, mode);
-    const spacing = (txp.maxMHz - txp.minMHz) / 5;
+    const txp = transponderById(player.transponderId, mode, customSettings);
+    const modemCount = modemCountForSettings(customSettings);
+    const spacing = (txp.maxMHz - txp.minMHz) / (modemCount + 1);
     const dataRates = player.ai ? [12, 4, 5, 3] : [12, 6, 10, 4];
     const mods = player.ai ? ["QPSK", "BPSK", "QPSK", "BPSK"] : ["QPSK", "BPSK", "QPSK", "8PSK"];
-    const modems = Array.from({ length: 4 }, (_, index) => ({
-      id: index + 1,
-      centerMHz: Number((txp.minMHz + spacing * (index + 1)).toFixed(3)),
-      dataRateMbps: dataRates[index],
-      waveform: "DVB-S2 0.20",
-      modulation: mods[index],
-      fec: index === 3 ? "2/3" : "3/4",
-      target: "own",
-      powerDbm: index === 0 ? -58 : -62,
-      txOn: player.ai && index === 0,
-      dataSelected: index === 0
-    }));
+    const modems = Array.from({ length: modemCount }, (_, index) => {
+      const modem = {
+        id: index + 1,
+        centerMHz: Number((txp.minMHz + spacing * (index + 1)).toFixed(3)),
+        dataRateMbps: dataRates[index % dataRates.length],
+        waveform: "DVB-S2 0.20",
+        modulation: mods[index % mods.length],
+        fec: index === 3 ? "2/3" : "3/4",
+        target: "own",
+        powerDbm: index === 0 ? -58 : -62,
+        txOn: player.ai && index === 0,
+        dataSelected: index === 0
+      };
+      const bounds = modemDataRateBounds(modem, txp, customSettings);
+      modem.dataRateMbps = Number(clamp(modem.dataRateMbps, bounds.minMbps, bounds.maxMbps).toFixed(3));
+      return modem;
+    });
     return {
       progressBits: 0,
       lostBits: 0,
       dataRx: createDataRxFromModem(modems[0]),
-      rxModems: createRxModems(id, mode),
+      rxModems: createRxModems(id, mode, customSettings),
       modems
     };
   }
@@ -675,9 +852,9 @@
     };
   }
 
-  function createRxModems(ownerId, mode = gameMode) {
+  function createRxModems(ownerId, mode = gameMode, customSettings = currentCustomSettings()) {
     const opponent = PLAYERS[PLAYERS[ownerId].opponentId];
-    const txp = transponderById(opponent.transponderId, mode);
+    const txp = transponderById(opponent.transponderId, mode, customSettings);
     return Array.from({ length: 2 }, (_, index) => ({
       id: index + 1,
       centerMHz: Number((txp.minMHz + (index + 1) * (txp.maxMHz - txp.minMHz) / 3).toFixed(3)),
@@ -725,8 +902,8 @@
     return game.startedAt + PREP_MS;
   }
 
-  function transponderForCenter(centerMHz, mode = gameMode) {
-    const txps = transponderList(mode);
+  function transponderForCenter(centerMHz, mode = gameMode, customSettings = currentCustomSettings()) {
+    const txps = transponderList(mode, customSettings);
     const inBand = txps.find((txp) => centerMHz >= txp.minMHz && centerMHz <= txp.maxMHz);
     if (inBand) return inBand;
     return txps.reduce((best, txp) => {
@@ -736,57 +913,77 @@
     }, null).txp;
   }
 
-  function battleRange(mode = gameMode) {
-    const txps = transponderList(mode);
+  function battleRange(mode = gameMode, customSettings = currentCustomSettings()) {
+    const txps = transponderList(mode, customSettings);
     const minTxp = Math.min(...txps.map((txp) => txp.minMHz));
     const maxTxp = Math.max(...txps.map((txp) => txp.maxMHz));
-    const guard = Math.max(0, (battleSpanMHzForMode(mode) - (maxTxp - minTxp)) / 2);
+    const guard = Math.max(0, (battleSpanMHzForMode(mode, customSettings) - (maxTxp - minTxp)) / 2);
     return { minMHz: minTxp - guard, maxMHz: maxTxp + guard };
   }
 
-  function isGuardFrequency(freqMHz, mode = gameMode) {
-    const range = battleRange(mode);
+  function isGuardFrequency(freqMHz, mode = gameMode, customSettings = currentCustomSettings()) {
+    const range = battleRange(mode, customSettings);
     const inRange = freqMHz >= range.minMHz && freqMHz <= range.maxMHz;
-    const inTransponder = transponderList(mode).some((txp) => freqMHz >= txp.minMHz && freqMHz <= txp.maxMHz);
+    const inTransponder = transponderList(mode, customSettings).some((txp) => freqMHz >= txp.minMHz && freqMHz <= txp.maxMHz);
     return inRange && !inTransponder;
   }
 
-  function humanSignalNearGuard(freqMHz, mode = gameMode) {
+  function humanSignalNearGuard(freqMHz, mode = gameMode, customSettings = currentCustomSettings()) {
     return buildSignals("play").some((signal) =>
       signal.ownerId === "alpha" &&
-      isGuardFrequency(signal.centerMHz, mode) &&
+      isGuardFrequency(signal.centerMHz, mode, customSettings) &&
       Math.abs(signal.centerMHz - freqMHz) <= Math.max(1.2, signal.occupiedMHz * 0.65)
     );
   }
 
   function targetTransponderId(ownerId, modem, phase) {
+    const customSettings = game?.customSettings || null;
     if (phase === "prep") return PLAYERS[ownerId].transponderId;
-    return transponderForCenter(Number(modem.centerMHz) || transponderById(PLAYERS[ownerId].transponderId, game.mode).minMHz, game.mode).id;
+    return transponderForCenter(Number(modem.centerMHz) || transponderById(PLAYERS[ownerId].transponderId, game.mode, customSettings).minMHz, game.mode, customSettings).id;
   }
 
-  function maxDataRateForTransponder(modem, txp) {
+  function dataRateForOccupiedBandwidth(modem, bandwidthMHz) {
     const waveform = WAVEFORMS[modem.waveform] || WAVEFORMS["RRC 0.35"];
     const modulation = MODULATIONS[modem.modulation] || MODULATIONS.QPSK;
     const fec = FEC_RATES[modem.fec] || FEC_RATES["3/4"];
-    return (txp.maxMHz - txp.minMHz) * 0.94 * modulation.bitsPerSymbol * fec.rate / (1 + waveform.rolloff);
+    return Math.max(0, Number(bandwidthMHz) || 0) * modulation.bitsPerSymbol * fec.rate / (1 + waveform.rolloff);
+  }
+
+  function modemDataRateBounds(modem, txp, customSettings = currentCustomSettings()) {
+    const txpMaxBandwidthMHz = Math.max(0.1, (txp.maxMHz - txp.minMHz) * 0.94);
+    const limits = signalBandwidthLimits(customSettings);
+    const maxBandwidthMHz = Math.max(0.1, Math.min(txpMaxBandwidthMHz, limits.maxMHz));
+    const minBandwidthMHz = Math.min(maxBandwidthMHz, Math.max(0, limits.minMHz));
+    return {
+      minMbps: Math.max(0.25, dataRateForOccupiedBandwidth(modem, minBandwidthMHz)),
+      maxMbps: Math.max(0.25, dataRateForOccupiedBandwidth(modem, maxBandwidthMHz)),
+      minBandwidthMHz,
+      maxBandwidthMHz
+    };
+  }
+
+  function maxDataRateForTransponder(modem, txp, customSettings = currentCustomSettings()) {
+    return modemDataRateBounds(modem, txp, customSettings).maxMbps;
   }
 
   function normalizeModemPlacement(ownerId, modem, phase = phaseAt(Date.now())) {
-    let txp = phase === "prep" ? transponderById(PLAYERS[ownerId].transponderId, game.mode) : battleRange(game.mode);
+    const customSettings = game?.customSettings || null;
+    let txp = phase === "prep" ? transponderById(PLAYERS[ownerId].transponderId, game.mode, customSettings) : battleRange(game.mode, customSettings);
     if (phase !== "prep" && ownerId === "bravo" && PLAYERS.bravo.ai && game.difficulty !== "hard") {
       if (modem.dataSelected) {
-        txp = transponderById("bravo", game.mode);
-      } else if (isGuardFrequency(Number(modem.centerMHz) || 0, game.mode) && !humanSignalNearGuard(Number(modem.centerMHz) || 0, game.mode)) {
-        txp = transponderForCenter(Number(modem.centerMHz) || transponderById("bravo", game.mode).minMHz, game.mode);
+        if (!game.ai?.crossBandDataUnlocked) txp = transponderById("bravo", game.mode, customSettings);
+      } else if (isGuardFrequency(Number(modem.centerMHz) || 0, game.mode, customSettings) && !humanSignalNearGuard(Number(modem.centerMHz) || 0, game.mode, customSettings)) {
+        txp = transponderForCenter(Number(modem.centerMHz) || transponderById("bravo", game.mode, customSettings).minMHz, game.mode, customSettings);
       }
     }
     modem.waveform = modem.waveform && WAVEFORMS[modem.waveform] ? modem.waveform : "DVB-S2 0.20";
-    modem.dataRateMbps = Number(clamp(Number(modem.dataRateMbps) || 1, 0.25, maxDataRateForTransponder(modem, txp)).toFixed(3));
+    const bounds = modemDataRateBounds(modem, txp, customSettings);
+    modem.dataRateMbps = Number(clamp(Number(modem.dataRateMbps) || 1, bounds.minMbps, bounds.maxMbps).toFixed(3));
     const shape = modemShape(modem);
     modem.symbolRateMsps = Number(shape.symbolRateMsps.toFixed(3));
     const half = Math.min(shape.occupiedMHz / 2, (txp.maxMHz - txp.minMHz) / 2);
     modem.centerMHz = Number(clamp(Number(modem.centerMHz) || (txp.minMHz + txp.maxMHz) / 2, txp.minMHz + half, txp.maxMHz - half).toFixed(3));
-    const power = powerProfileForMode(game.mode);
+    const power = powerProfileForMode(game.mode, customSettings);
     modem.powerDbm = Number(clamp(Number(modem.powerDbm) || -62, power.modemMinDbm, power.modemMaxDbm).toFixed(1));
   }
 
@@ -798,7 +995,7 @@
 
   function rawSignalPowerDbm(modem, isData) {
     const shape = modemShape(modem);
-    const power = powerProfileForMode(game.mode);
+    const power = powerProfileForMode(game.mode, game.customSettings);
     return clamp(Number(modem.powerDbm) || -62, power.modemMinDbm, power.modemMaxDbm) + (isData ? 1.1 : 0) - Math.max(0, shape.occupiedMHz - 10) * 0.11;
   }
 
@@ -808,7 +1005,7 @@
       if (!modem.txOn) continue;
       occupied += modemShape(modem).occupiedMHz;
     }
-    const softMHz = powerProfileForMode(game.mode).occupancySoftMHz;
+    const softMHz = powerProfileForMode(game.mode, game.customSettings).occupancySoftMHz;
     return occupied > softMHz ? -(occupied - softMHz) * 0.62 : 0;
   }
 
@@ -818,7 +1015,7 @@
       if (!modem.txOn) continue;
       totalMw += dbmToMw(rawSignalPowerDbm(modem, modem.dataSelected));
     }
-    const limitMw = dbmToMw(powerProfileForMode(game.mode).outputLimitDbm);
+    const limitMw = dbmToMw(powerProfileForMode(game.mode, game.customSettings).outputLimitDbm);
     const capBackoffDb = totalMw > limitMw ? ratioToDb(limitMw / totalMw) : 0;
     return capBackoffDb + ownerBandwidthBackoffDb(ownerId);
   }
@@ -1156,7 +1353,7 @@
     };
     const cMw = dbmToMw(desired.powerDbm);
     const receiverBandwidthHz = Math.max((desired.usableMHz || desired.symbolRateMsps || desired.occupiedMHz) * 1_000_000, 1);
-    const txp = transponderById(desired.transponderId, game.mode) || transponderForCenter(desired.centerMHz, game.mode);
+    const txp = transponderById(desired.transponderId, game.mode, game.customSettings) || transponderForCenter(desired.centerMHz, game.mode, game.customSettings);
     const noiseDensityDbmHz = environmentalNoiseDensityDbmHz(ownerId, desired, txp);
     const noiseDbm = noiseDensityDbmHz + 10 * Math.log10(receiverBandwidthHz);
     const noiseMw = dbmToMw(noiseDbm);
@@ -1258,7 +1455,7 @@
   function computeLinkForPlayer(ownerId, signals) {
     const owner = PLAYERS[ownerId];
     const dataModem = game.players[ownerId].modems.find((modem) => modem.dataSelected);
-    const ownTxp = transponderById(owner.transponderId, game.mode);
+    const ownTxp = transponderById(owner.transponderId, game.mode, game.customSettings);
     if (!dataModem) return haltedLink("NO DATA MODEM", "Pick one modem before prep ends.");
     const shape = modemShape(dataModem);
     if (!dataModem.txOn) return haltedLink("STANDBY", "Data modem is not transmitting.", { requiredEbNoDb: shape.requiredEbNoDb });
@@ -1459,6 +1656,213 @@
     return "RRC 0.35";
   }
 
+  function aiIndexOf(items, value) {
+    const index = items.indexOf(value);
+    return index < 0 ? 0 : index;
+  }
+
+  function aiOpeningModulation() {
+    const power = powerProfileForMode(game.mode, game.customSettings);
+    const hasBoostedPower = power.outputLimitDbm >= -50;
+    const hasHighPower = power.outputLimitDbm >= -46;
+    if (game.difficulty === "hard") {
+      if (hasHighPower) return randomChoice(["64QAM", "32QAM", "16QAM", "16QAM"]);
+      if (hasBoostedPower) return randomChoice(["32QAM", "16QAM", "16QAM", "8PSK"]);
+      return randomChoice(["16QAM", "8PSK", "8PSK"]);
+    }
+    if (game.difficulty === "easy") return randomChoice(["8PSK", "QPSK", "QPSK"]);
+    if (hasBoostedPower) return randomChoice(["16QAM", "8PSK", "8PSK"]);
+    return "8PSK";
+  }
+
+  function aiOpeningFec(modulation) {
+    if (modulation === "64QAM") return randomChoice(["1/2", "2/3"]);
+    if (modulation === "32QAM") return randomChoice(["1/2", "2/3"]);
+    if (modulation === "16QAM") return randomChoice(["2/3", "1/2", "3/4"]);
+    if (modulation === "8PSK") return randomChoice(["2/3", "3/4"]);
+    return randomChoice(["3/4", "5/6"]);
+  }
+
+  function aiOpeningWidthMHz(txp, modulationName = "8PSK") {
+    const limits = signalBandwidthLimits(game.customSettings);
+    const modulation = MODULATIONS[modulationName] || MODULATIONS.QPSK;
+    const qamOpening = modulation.family === "qam";
+    const defaultMin = qamOpening ? 4.2 : game.difficulty === "hard" ? 5.8 : game.difficulty === "easy" ? 4.8 : 5.4;
+    const defaultMax = qamOpening ? 6.8 : game.difficulty === "hard" ? 9.6 : game.difficulty === "easy" ? 7.4 : 8.8;
+    const txpMax = Math.max(1.2, (txp.maxMHz - txp.minMHz) * 0.72);
+    const min = customSettingsActive(game.customSettings) ? limits.minMHz : defaultMin;
+    const max = customSettingsActive(game.customSettings) ? limits.maxMHz : defaultMax;
+    const low = clamp(min, 0.8, txpMax);
+    const high = Math.max(low, clamp(max, low, txpMax));
+    return randomBetween(low, high);
+  }
+
+  function dataRateForAiWidth(modem, widthMHz) {
+    return Number(Math.max(0.25, dataRateForOccupiedBandwidth(modem, widthMHz)).toFixed(3));
+  }
+
+  function randomCenterInGap(gap, occupiedMHz) {
+    const half = occupiedMHz / 2;
+    if (gap.widthMHz <= occupiedMHz) return (gap.lowMHz + gap.highMHz) / 2;
+    return randomBetween(gap.lowMHz + half, gap.highMHz - half);
+  }
+
+  function chooseOpenCenterForAi(ranges, occupiedMHz, signals, excludeId = "bravo-1") {
+    const viable = [];
+    for (const range of ranges) {
+      const gaps = gapsInRange(range.minMHz, range.maxMHz, signals, excludeId)
+        .filter((gap) => gap.widthMHz >= occupiedMHz + 0.4);
+      for (const gap of gaps) viable.push({ ...gap, range });
+    }
+    if (viable.length) {
+      viable.sort((a, b) => b.widthMHz - a.widthMHz);
+      const pool = viable.slice(0, Math.min(3, viable.length));
+      return Number(randomCenterInGap(randomChoice(pool), occupiedMHz).toFixed(3));
+    }
+
+    const fallback = ranges[0] || transponderById("bravo", game.mode, game.customSettings);
+    const half = occupiedMHz / 2;
+    return Number(clamp(randomBetween(fallback.minMHz, fallback.maxMHz), fallback.minMHz + half, fallback.maxMHz - half).toFixed(3));
+  }
+
+  function aiEligibleDataRanges(profile, includeCrossBand = false) {
+    const own = transponderById("bravo", game.mode, game.customSettings);
+    const all = transponderList(game.mode, game.customSettings);
+    if (!includeCrossBand && !profile.crossBandData) return [own];
+    return [own, ...all.filter((txp) => txp.id !== own.id)];
+  }
+
+  function aiOpeningDataPatch(profile, aiData, signals = [], options = {}) {
+    const ranges = aiEligibleDataRanges(profile, Boolean(options.includeCrossBand));
+    const ownTxp = transponderById("bravo", game.mode, game.customSettings);
+    const placementRanges = options.preferCrossBand && ranges.length > 1
+      ? ranges.filter((txp) => txp.id !== ownTxp.id)
+      : ranges;
+    const anchorTxp = placementRanges[0] || ranges[0];
+    const modulation = options.modulation || aiOpeningModulation();
+    const fec = options.fec || aiOpeningFec(modulation);
+    const widthMHz = options.widthMHz || aiOpeningWidthMHz(anchorTxp, modulation);
+    const waveform = options.waveform || "DVB-S2 0.20";
+    const openingPowerDbm = profile.dataPowerDbm + (game.difficulty === "easy" ? 0.8 : game.difficulty === "hard" ? 2.8 : 2.0);
+    const patch = {
+      txOn: true,
+      target: "own",
+      waveform,
+      modulation,
+      fec,
+      powerDbm: Number(clamp(
+        options.powerDbm ?? openingPowerDbm + randomBetween(-0.8, 0.8),
+        powerProfileForMode(game.mode, game.customSettings).modemMinDbm,
+        powerProfileForMode(game.mode, game.customSettings).modemMaxDbm
+      ).toFixed(1))
+    };
+    patch.dataRateMbps = dataRateForAiWidth({ ...aiData, ...patch }, widthMHz);
+    const occupiedMHz = modemShape({ ...aiData, ...patch }).occupiedMHz;
+    patch.centerMHz = chooseOpenCenterForAi(placementRanges, occupiedMHz, signals, `bravo-${aiData.id || 1}`);
+    return patch;
+  }
+
+  function aiPatchForCurrentWidth(aiData, patch) {
+    const currentWidth = modemShape(aiData).occupiedMHz;
+    const next = { ...aiData, ...patch };
+    return {
+      ...patch,
+      dataRateMbps: dataRateForAiWidth(next, currentWidth)
+    };
+  }
+
+  function aiLinkUnderPressure(aiLink) {
+    if (!aiLink) return false;
+    if (!aiLink.dataRxLocked) return false;
+    return !aiLink.flowing ||
+      (aiLink.marginDb ?? 99) < 2.2 ||
+      (aiLink.lossFraction ?? 0) > 0.16 ||
+      (aiLink.jamFraction ?? 0) > 0.36;
+  }
+
+  function shedAiJammerLoad(aiState, force = false) {
+    const jammers = aiState.modems
+      .slice(1)
+      .filter((modem) => modem.txOn)
+      .sort((a, b) => (a.powerDbm || -90) - (b.powerDbm || -90));
+    const target = jammers[0];
+    if (!target) return false;
+    if (force || target.powerDbm <= -76) target.txOn = false;
+    else target.powerDbm = Number((target.powerDbm - 3).toFixed(1));
+    return true;
+  }
+
+  function chooseAiSurvivalPatch(profile, aiState, aiData, signals, aiLink) {
+    const power = powerProfileForMode(game.mode, game.customSettings);
+    const backoffDb = ownerPowerBackoffDb("bravo");
+    if (backoffDb < -1.2 && shedAiJammerLoad(aiState, backoffDb < -3)) {
+      return { reason: "shed-jammer-load", patch: { powerDbm: aiData.powerDbm } };
+    }
+
+    const currentPower = Number(aiData.powerDbm) || profile.dataPowerDbm;
+    const margin = Number.isFinite(aiLink.marginDb) ? aiLink.marginDb : -3;
+    const powerHeadroom = power.modemMaxDbm - currentPower;
+    if (powerHeadroom > 0.8 && backoffDb > -2.4) {
+      const step = clamp(2.1 - margin, 1.1, 3.4) + randomBetween(0, 0.7);
+      return {
+        reason: "raise-data-power",
+        patch: { powerDbm: Number(Math.min(power.modemMaxDbm, currentPower + step).toFixed(1)) }
+      };
+    }
+
+    const fecIndex = aiIndexOf(AI_FEC_ROBUSTNESS, aiData.fec);
+    if (fecIndex > 0) {
+      const fec = AI_FEC_ROBUSTNESS[fecIndex - 1];
+      return {
+        reason: "lower-fec-rate",
+        patch: aiPatchForCurrentWidth(aiData, { fec })
+      };
+    }
+
+    const modIndex = aiIndexOf(AI_MOD_ROBUSTNESS, aiData.modulation);
+    if (modIndex > 0) {
+      const modulation = AI_MOD_ROBUSTNESS[modIndex - 1];
+      return {
+        reason: "lower-modulation",
+        patch: aiPatchForCurrentWidth(aiData, { modulation })
+      };
+    }
+
+    const waveformIndex = aiIndexOf(AI_WAVEFORM_ROBUSTNESS, aiData.waveform);
+    if (waveformIndex < AI_WAVEFORM_ROBUSTNESS.length - 1) {
+      return {
+        reason: "wider-rolloff",
+        patch: aiPatchForCurrentWidth(aiData, { waveform: AI_WAVEFORM_ROBUSTNESS[waveformIndex + 1] })
+      };
+    }
+
+    return {
+      reason: "relocate-high-order",
+      patch: aiOpeningDataPatch(profile, aiData, signals, {
+        includeCrossBand: true,
+        preferCrossBand: true,
+        powerDbm: Math.min(power.modemMaxDbm, Math.max(currentPower - 1.5, profile.dataPowerDbm)),
+        widthMHz: Math.max(5.5, Math.min(modemShape(aiData).occupiedMHz, 12))
+      })
+    };
+  }
+
+  function scheduleAiSurvivalReconfig(now, phase, aiState, aiData, profile, aiLink, signals) {
+    if (!aiLinkUnderPressure(aiLink)) return false;
+    if (game.ai.pendingEvadeAt !== null || game.ai.pendingDataRxAt !== null) return true;
+    const cadence = Math.max(2500, profile.reconfigureMs * 0.55);
+    if (now - game.ai.lastSurvivalActionAt < cadence) return true;
+    const decision = chooseAiSurvivalPatch(profile, aiState, aiData, signals, aiLink);
+    if (!decision?.patch) return false;
+    game.ai.pendingEvadePatch = decision.patch;
+    game.ai.pendingEvadeAt = now + Math.max(900, profile.reconfigureMs * 0.75);
+    game.ai.lastSurvivalActionAt = now;
+    game.ai.lastEvadeAt = now;
+    game.ai.lastSurvivalReason = decision.reason;
+    if (decision.reason === "relocate-high-order") game.ai.crossBandDataUnlocked = true;
+    return true;
+  }
+
   function observeHumanSignals(now) {
     return game.players.alpha.modems
       .filter((modem) => modem.txOn)
@@ -1599,30 +2003,6 @@
     return focus;
   }
 
-  function chooseAiDataPatch(profile, aiData, signals, aiLink, humanProgressDelta) {
-    const battle = battleRange();
-    const own = transponderById("bravo", game.mode);
-    const preferredMin = profile.crossBandData && humanProgressDelta > 0.08 ? battle.minMHz : own.minMHz;
-    const preferredMax = profile.crossBandData && humanProgressDelta > 0.08 ? battle.maxMHz : own.maxMHz;
-    const gaps = gapsInRange(preferredMin, preferredMax, signals, "bravo-1");
-    const bestGap = gaps[0] || { lowMHz: own.minMHz, highMHz: own.maxMHz, widthMHz: own.maxMHz - own.minMHz };
-    const patch = {};
-    const desiredWidth = Math.max(2.2, Math.min(bestGap.widthMHz * 0.72, aiLink.lossFraction > 0.45 ? 6.5 : 9));
-    const waveform = waveformForWidth(desiredWidth);
-    const rolloff = WAVEFORMS[waveform].rolloff;
-    patch.waveform = waveform;
-    patch.modulation = aiLink.lossFraction > 0.3 ? "BPSK" : aiLink.marginDb < 1 ? "QPSK" : "8PSK";
-    patch.fec = aiLink.lossFraction > 0.35 ? "1/2" : aiLink.marginDb < 0.5 ? "2/3" : "3/4";
-    const modulation = MODULATIONS[patch.modulation] || MODULATIONS.QPSK;
-    const fec = FEC_RATES[patch.fec] || FEC_RATES["3/4"];
-    const symbolRateMsps = clamp(desiredWidth / (1 + rolloff), 1.5, 9);
-    patch.dataRateMbps = Number((symbolRateMsps * modulation.bitsPerSymbol * fec.rate).toFixed(3));
-    const half = symbolRateMsps * (1 + rolloff) / 2;
-    patch.centerMHz = Number(clamp((bestGap.lowMHz + bestGap.highMHz) / 2, preferredMin + half, preferredMax - half).toFixed(3));
-    patch.powerDbm = profile.dataPowerDbm + (profile.crossBandData && humanProgressDelta > 0.08 ? 1 : 0);
-    return patch;
-  }
-
   function buildAiJammerPlans(profile, focus, humanLink, now) {
     const contacts = game.ai.observedHumanSignals || [];
     const secondary = contacts.find((item) => item.modemId !== focus.modemId);
@@ -1686,7 +2066,11 @@
     const aiData = aiState.modems[0];
     const profile = DIFFICULTY_PROFILES[game.difficulty] || DIFFICULTY_PROFILES.medium;
     if (phase === "prep") {
-      Object.assign(aiData, { dataRateMbps: 12, modulation: "QPSK", fec: "3/4", waveform: "DVB-S2 0.20", powerDbm: profile.dataPowerDbm });
+      if (!game.ai.dataOpeningSeeded) {
+        Object.assign(aiData, aiOpeningDataPatch(profile, aiData, []));
+        normalizeModemPlacement("bravo", aiData, phase);
+        game.ai.dataOpeningSeeded = true;
+      }
       Object.assign(aiState.dataRx, dataRxPatchForModem(aiData));
     }
     Object.assign(aiData, { dataSelected: true, target: "own", txOn: true });
@@ -1704,6 +2088,8 @@
       game.ai.pendingDataRxAt = null;
       game.ai.pendingDataRxPatch = null;
       game.ai.lastHumanGoodput = 1;
+      game.ai.lastSurvivalReason = null;
+      game.ai.crossBandDataUnlocked = false;
       return;
     }
 
@@ -1713,21 +2099,16 @@
     const humanLink = computeLinkForPlayer("alpha", signals);
     const aiLink = computeLinkForPlayer("bravo", signals);
 
+    if (scheduleAiSurvivalReconfig(now, phase, aiState, aiData, profile, aiLink, signals)) return;
+
     if (now >= game.ai.nextLookAt) {
       updateAiObservations(now, profile, humanLink, signals);
       game.ai.nextLookAt = now + profile.lookLagMs;
     }
 
-    if ((aiLink.jamFraction > 0.58 || (aiLink.lossFraction ?? 0) > 0.24 || (aiLink.marginDb ?? 99) < 1.1) && now - game.ai.lastEvadeAt > profile.evadeMs && game.ai.pendingEvadeAt === null) {
-      const humanProgressDelta = game.players.alpha.progressBits / packageBits() - game.players.bravo.progressBits / packageBits();
-      game.ai.pendingEvadePatch = chooseAiDataPatch(profile, aiData, signals, aiLink, humanProgressDelta);
-      game.ai.pendingEvadeAt = now + profile.reconfigureMs;
-      game.ai.lastEvadeAt = now;
-      game.ai.hopIndex = (game.ai.hopIndex + 1) % 8;
-    }
-
     if (now - game.ai.lastActionAt < profile.reactionMs) return;
     game.ai.lastActionAt = now;
+    if (!aiLink.flowing || (aiLink.marginDb ?? 0) < 0.8) return;
     const focus = chooseAiFocus(profile, humanLink, now, signals);
     if (!focus) {
       for (const modem of aiState.modems.slice(1)) Object.assign(modem, { txOn: false, target: "own" });
@@ -1780,9 +2161,10 @@
     refreshRxLocks(id, signals);
     const links = computeLinks(signals);
     const mode = game.mode || gameMode;
-    const txps = transpondersForMode(mode);
-    const power = powerProfileForMode(mode);
-    const range = battleRange(mode);
+    const customSettings = game.customSettings || normalizeCustomSettings();
+    const txps = transpondersForMode(mode, customSettings);
+    const power = powerProfileForMode(mode, customSettings);
+    const range = battleRange(mode, customSettings);
     game.players[id].dataRx.dataPassing = Boolean(game.players[id].dataRx.locked && links[id].flowing);
     const players = {};
     for (const ownerId of Object.keys(PLAYERS)) {
@@ -1801,6 +2183,7 @@
       roundId: game.roundId,
       mode,
       phase,
+      customSettings: { ...customSettings },
       prepMs: PREP_MS,
       dataLocked: game.dataLocked,
       ready: { ...(game.ready || {}) },
@@ -1901,7 +2284,7 @@
       const rx = game.players[ownerId].rxModems.find((item) => item.id === Number(payload.rxId));
       if (!rx) return Promise.resolve(stateFor(ownerId));
       const patch = payload.patch || {};
-      const range = battleRange(game.mode);
+      const range = battleRange(game.mode, game.customSettings);
       if (Object.prototype.hasOwnProperty.call(patch, "centerMHz")) rx.centerMHz = Number(clamp(Number(patch.centerMHz), range.minMHz, range.maxMHz).toFixed(3));
       if (Object.prototype.hasOwnProperty.call(patch, "bandwidthMHz")) rx.bandwidthMHz = Number(clamp(Number(patch.bandwidthMHz), 0.2, 36).toFixed(3));
       if (Object.prototype.hasOwnProperty.call(patch, "modulation") && MODULATIONS[patch.modulation]) rx.modulation = patch.modulation;
@@ -1912,7 +2295,7 @@
     if (payload.type === "updateDataRx") {
       const rx = game.players[ownerId].dataRx;
       const patch = payload.patch || {};
-      const range = battleRange(game.mode);
+      const range = battleRange(game.mode, game.customSettings);
       if (Object.prototype.hasOwnProperty.call(patch, "centerMHz")) rx.centerMHz = Number(clamp(Number(patch.centerMHz), range.minMHz, range.maxMHz).toFixed(3));
       if (Object.prototype.hasOwnProperty.call(patch, "bandwidthMHz")) rx.bandwidthMHz = Number(clamp(Number(patch.bandwidthMHz), 0.2, 36).toFixed(3));
       if (Object.prototype.hasOwnProperty.call(patch, "modulation") && MODULATIONS[patch.modulation]) rx.modulation = patch.modulation;
@@ -1948,6 +2331,7 @@
 
   async function pollState() {
     if (networkRole === "client") return;
+    if (!game || !started) return;
     state = stateFor(playerId);
     updateFromState();
     if (networkRole === "host") broadcastNetworkStates();
@@ -1992,14 +2376,14 @@
   }
 
   function stateBattleRange() {
-    return state?.battleRange || battleRange(state?.mode || gameMode);
+    return state?.battleRange || battleRange(state?.mode || gameMode, state?.customSettings);
   }
 
   function statePowerProfile() {
-    return state?.powerProfile || powerProfileForMode(state?.mode || gameMode);
+    return state?.powerProfile || powerProfileForMode(state?.mode || gameMode, state?.customSettings);
   }
 
-  function formatTransponderPlan(txps = state?.transponders || transpondersForMode(state?.mode || gameMode)) {
+  function formatTransponderPlan(txps = state?.transponders || transpondersForMode(state?.mode || gameMode, state?.customSettings)) {
     return Object.values(txps)
       .sort((a, b) => a.minMHz - b.minMHz)
       .map((txp) => `${txp.label} ${txp.minMHz}-${txp.maxMHz} MHz`)
@@ -2031,13 +2415,15 @@
 
     if (!initializedView) {
       initializedView = true;
-      tuneToView();
+      applyMessyAnalyzerStart();
     }
 
     const you = state.you;
     const ownLink = state.players[you.id].link;
     const multiplayer = state.mode === "multiplayer";
     const sandbox = state.mode === "sandbox";
+    const transponderCount = Object.keys(state.transponders || {}).length;
+    const battleSpan = Math.round(state.battleSpanMHz || 0);
     const ready = Boolean(state.ready?.[you.id]);
     updatePlayerSwitch();
     el.playerTitle.textContent = `${you.name} Screen`;
@@ -2053,9 +2439,9 @@
       ? state.winnerId === "tie" ? "Tie" : state.winnerId === you.id ? "Winner" : "Round Lost"
       : `${ownLink.state}${ownLink.marginDb === null ? "" : ` ${ownLink.marginDb >= 0 ? "+" : ""}${ownLink.marginDb.toFixed(1)} dB`}`;
     el.lockNotice.textContent = sandbox
-      ? "Sandbox mode uses a generated signal field with relaxed power limits. Retune Data RX and the search receivers to explore the full span."
+      ? `Sandbox mode uses a generated signal field across a ${battleSpan} MHz span. Retune Data RX and the search receivers to explore the full span.`
       : multiplayer
-      ? "Two-computer mode uses a 160 MHz battle span across four transponders. Retune Data RX after changing carrier or format."
+      ? `Two-computer mode uses a ${battleSpan} MHz battle span across ${transponderCount} transponders. Retune Data RX after changing carrier or format.`
       : state.dataLocked
       ? "Data modem choice is locked. Retune Data RX after changing carrier or format."
       : "Data modem can be changed during prep. Tune Data RX before battle.";
@@ -2442,7 +2828,7 @@
     const range = stateBattleRange();
     const power = statePowerProfile();
     const txp = state.phase === "prep" ? ownTxp : range;
-    const maxDataRate = maxDataRateForTransponder(modem, txp);
+    const dataRateBounds = modemDataRateBounds(modem, txp, state.customSettings);
     card.classList.toggle("data", modem.dataSelected);
     card.classList.toggle("transmitting", modem.txOn);
     const pill = card.querySelector('[data-role="data-pill"]');
@@ -2457,7 +2843,8 @@
 
     card.querySelector('[data-field="centerMHz"]').min = state.phase === "prep" ? ownTxp.minMHz : range.minMHz;
     card.querySelector('[data-field="centerMHz"]').max = state.phase === "prep" ? ownTxp.maxMHz : range.maxMHz;
-    card.querySelector('[data-field="dataRateMbps"]').max = Math.max(0.25, maxDataRate).toFixed(2);
+    card.querySelector('[data-field="dataRateMbps"]').min = Math.max(0.25, dataRateBounds.minMbps).toFixed(2);
+    card.querySelector('[data-field="dataRateMbps"]').max = Math.max(0.25, dataRateBounds.maxMbps).toFixed(2);
     card.querySelector('[data-field="powerDbm"]').min = power.modemMinDbm;
     card.querySelector('[data-field="powerDbm"]').max = power.modemMaxDbm;
     const txButton = card.querySelector('[data-role="tx"]');
@@ -2502,14 +2889,15 @@
   }
 
   function settings() {
-    const limits = analyzerLimits();
+    const limits = updateAnalyzerInputLimits();
     let span = Math.max(1, Number(el.span.value) || 42);
     let center = Number(el.centerFreq.value) || 2258;
     span = Math.min(limits.maxSpanMHz, Math.max(1, span));
     const half = span / 2;
     center = Math.max(limits.minMHz + half, Math.min(limits.maxMHz - half, center));
     reflectAnalyzerInputs(center, span);
-    const ref = Number(el.refLevel.value) || -48;
+    const refValue = Number(el.refLevel.value);
+    const ref = Number.isFinite(refValue) ? refValue : -48;
     const dbDiv = Number(el.dbPerDiv.value) || 8;
     const rbwMHz = Number(el.rbw.value) || 0.1;
     const vbwMHz = Number(el.vbw.value) || rbwMHz;
@@ -3060,6 +3448,33 @@
     ctx.restore();
   }
 
+  function drawZoomSelection() {
+    if (!pointer || pointer.mode !== "zoom" || !pointer.moved) return;
+    const left = Math.max(plot.left, Math.min(el.spectrumCanvas.width - plot.right, pointer.startCanvasX));
+    const right = Math.max(plot.left, Math.min(el.spectrumCanvas.width - plot.right, pointer.currentCanvasX));
+    const x = Math.min(left, right);
+    const width = Math.abs(right - left);
+    if (width < 2) return;
+
+    const top = Math.max(plot.top, Math.min(el.spectrumCanvas.height - plot.bottom, pointer.startCanvasY));
+    const bottom = Math.max(plot.top, Math.min(el.spectrumCanvas.height - plot.bottom, pointer.currentCanvasY));
+    let y = Math.min(top, bottom);
+    let height = Math.abs(bottom - top);
+    if (height < 18) {
+      y = plot.top;
+      height = plotHeight();
+    }
+
+    ctx.save();
+    ctx.fillStyle = "rgba(101, 230, 173, 0.12)";
+    ctx.strokeStyle = "rgba(101, 230, 173, 0.95)";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([7, 4]);
+    ctx.fillRect(x, y, width, height);
+    ctx.strokeRect(x + 0.5, y + 0.5, width, height);
+    ctx.restore();
+  }
+
   function markerTriangle(x, y, color, label) {
     ctx.save();
     ctx.fillStyle = color;
@@ -3247,34 +3662,24 @@
   }
 
   function waterfallColor(db, s) {
-    const cold = s.floor - 7;
-    const hot = s.ref + 6;
-    const norm = Math.max(0, Math.min(1, (db - cold) / (hot - cold)));
-    let r;
-    let g;
-    let b;
-    if (norm < 0.25) {
-      const k = norm / 0.25;
-      r = 4;
-      g = 8 + 42 * k;
-      b = 14 + 84 * k;
-    } else if (norm < 0.55) {
-      const k = (norm - 0.25) / 0.3;
-      r = 4 + 92 * k;
-      g = 50 + 150 * k;
-      b = 98 + 50 * k;
-    } else if (norm < 0.8) {
-      const k = (norm - 0.55) / 0.25;
-      r = 96 + 150 * k;
-      g = 200 + 36 * k;
-      b = 148 - 122 * k;
-    } else {
-      const k = (norm - 0.8) / 0.2;
-      r = 246 + 9 * k;
-      g = 236 - 116 * k;
-      b = 26 + 52 * k;
+    const displayRangeDb = Math.max(1, s.ref - s.bottomDb);
+    const displayNorm = Number.isFinite(db) ? clamp((db - s.bottomDb) / displayRangeDb, 0, 1) : 0;
+    const densityNorm = displayNorm < 0.5
+      ? Math.pow(displayNorm, 0.78)
+      : 0.5 + Math.pow((displayNorm - 0.5) * 2, 1.08) * 0.5;
+    for (let i = 1; i < WATERFALL_PALETTE.length; i++) {
+      const prev = WATERFALL_PALETTE[i - 1];
+      const next = WATERFALL_PALETTE[i];
+      if (densityNorm > next.at) continue;
+      const k = clamp((densityNorm - prev.at) / Math.max(next.at - prev.at, 0.0001), 0, 1);
+      return [
+        Math.round(prev.rgb[0] + (next.rgb[0] - prev.rgb[0]) * k),
+        Math.round(prev.rgb[1] + (next.rgb[1] - prev.rgb[1]) * k),
+        Math.round(prev.rgb[2] + (next.rgb[2] - prev.rgb[2]) * k),
+        255
+      ];
     }
-    return [r | 0, g | 0, b | 0, 255];
+    return [255, 242, 226, 255];
   }
 
   function drawWaterfall(s) {
@@ -3314,7 +3719,8 @@
     wctx.fillStyle = "rgba(237, 242, 238, 0.86)";
     wctx.font = "12px system-ui, sans-serif";
     const sweepLabel = lastSweepInfo ? `${(lastSweepInfo.sweepSeconds * 1000).toFixed(0)} ms sweep` : "acquiring";
-    wctx.fillText(`Waterfall | newest sweep at top | ${formatBandwidth(s.rbwMHz)} RBW | ${formatBandwidth(s.vbwMHz)} VBW | ${s.window.label} | ${sweepLabel}`, 10, 16);
+    const levelLabel = `${s.bottomDb.toFixed(0)} to ${s.ref.toFixed(0)} dBm`;
+    wctx.fillText(`Waterfall | newest sweep at top | ${levelLabel} | ${formatBandwidth(s.rbwMHz)} RBW | ${formatBandwidth(s.vbwMHz)} VBW | ${s.window.label} | ${sweepLabel}`, 10, 16);
     wctx.restore();
   }
 
@@ -3360,7 +3766,7 @@
   function receiveIqLinkForSignal(signal, rx = {}) {
     if (!signal) return null;
     const receiverBandwidthHz = Math.max((Number(rx.bandwidthMHz) || signal.usableMHz || signal.symbolRateMsps || signal.occupiedMHz) * 1_000_000, 1);
-    const txp = state?.transponders?.[signal.transponderId] || transponderForCenter(signal.centerMHz, state?.mode || gameMode);
+    const txp = state?.transponders?.[signal.transponderId] || transponderForCenter(signal.centerMHz, state?.mode || gameMode, state?.customSettings);
     const desired = {
       ...signal,
       rolloff: signal.rolloff ?? (WAVEFORMS[signal.waveform] || WAVEFORMS["RRC 0.35"]).rolloff,
@@ -3561,6 +3967,7 @@
     drawPeak(s);
     drawMarkers(s);
     drawReticle(s);
+    drawZoomSelection();
     drawWaterfall(s);
     drawInlineIqPlots();
     updateReadoutText();
@@ -3603,6 +4010,25 @@
     el.span.value = newSpan.toFixed(2);
     el.centerFreq.value = (newMin + newSpan / 2).toFixed(3);
     resetAcquisition();
+  }
+
+  function applyZoomSelection(selection) {
+    const s = settings();
+    const left = Math.max(plot.left, Math.min(el.spectrumCanvas.width - plot.right, selection.startCanvasX));
+    const right = Math.max(plot.left, Math.min(el.spectrumCanvas.width - plot.right, selection.currentCanvasX));
+    if (Math.abs(right - left) < 8) return false;
+
+    const f1 = xToFreq(left, s);
+    const f2 = xToFreq(right, s);
+    const limits = analyzerLimits();
+    let span = Math.max(1, Math.min(limits.maxSpanMHz, Math.abs(f2 - f1)));
+    const half = span / 2;
+    let center = (f1 + f2) / 2;
+    center = Math.max(limits.minMHz + half, Math.min(limits.maxMHz - half, center));
+    el.span.value = span.toFixed(2);
+    el.centerFreq.value = center.toFixed(3);
+    resetAcquisition();
+    return true;
   }
 
   function dropMarkerAtReticle() {
@@ -3673,12 +4099,40 @@
     menu.style.top = `${Math.min(evt.clientY, window.innerHeight - height - 8)}px`;
   }
 
-  function tuneToView() {
-    const txp = transponderForView();
-    if (!txp) return;
-    el.centerFreq.value = ((txp.minMHz + txp.maxMHz) / 2).toFixed(2);
-    const span = state?.phase === "prep" ? txp.maxMHz - txp.minMHz : Math.min(state?.battleSpanMHz || 80, txp.maxMHz - txp.minMHz + 6);
+  function setSelectValue(input, value) {
+    if (!input) return;
+    const option = [...input.options].find((item) => item.value === String(value));
+    if (option) input.value = option.value;
+  }
+
+  function updateAnalyzerInputLimits() {
+    const limits = analyzerLimits();
+    el.centerFreq.min = limits.minMHz.toFixed(3);
+    el.centerFreq.max = limits.maxMHz.toFixed(3);
+    el.span.min = "1";
+    el.span.max = limits.maxSpanMHz.toFixed(2);
+    return limits;
+  }
+
+  function applyMessyAnalyzerStart() {
+    const limits = updateAnalyzerInputLimits();
+    const span = Math.max(1, limits.maxSpanMHz);
+    el.centerFreq.value = ((limits.minMHz + limits.maxMHz) / 2).toFixed(3);
     el.span.value = span.toFixed(2);
+    el.refLevel.value = "0";
+    setSelectValue(el.dbPerDiv, "10");
+    setSelectValue(el.rbw, "1");
+    setSelectValue(el.vbw, "1");
+    setSelectValue(el.sweepTime, "2");
+    setSelectValue(el.detector, "sample");
+    setSelectValue(el.fftPoints, "4096");
+    el.noiseFloor.value = "-78";
+    el.averaging.value = "0";
+    el.avgVal.textContent = "0%";
+    el.traceClear.checked = true;
+    el.traceAverage.checked = false;
+    el.traceMax.checked = false;
+    el.traceMin.checked = false;
     resetAcquisition();
   }
 
@@ -3723,25 +4177,63 @@
   });
 
   el.spectrumCanvas.addEventListener("pointerdown", (evt) => {
-    pointer = { startX: evt.clientX, lastX: evt.clientX, moved: false };
+    if (evt.button !== 0) return;
+    evt.preventDefault();
+    hideMarkerMenu();
+    const p = canvasPos(evt);
+    pointer = {
+      mode: evt.shiftKey ? "pan" : "zoom",
+      startX: evt.clientX,
+      lastX: evt.clientX,
+      startCanvasX: p.x,
+      startCanvasY: p.y,
+      currentCanvasX: p.x,
+      currentCanvasY: p.y,
+      moved: false
+    };
+    el.spectrumCanvas.style.cursor = pointer.mode === "pan" ? "grabbing" : "crosshair";
     el.spectrumCanvas.setPointerCapture(evt.pointerId);
   });
   el.spectrumCanvas.addEventListener("pointermove", (evt) => {
     if (!pointer) return;
+    evt.preventDefault();
+    const p = canvasPos(evt);
+    pointer.currentCanvasX = p.x;
+    pointer.currentCanvasY = p.y;
     const dx = evt.clientX - pointer.lastX;
     const total = evt.clientX - pointer.startX;
-    if (Math.abs(total) > 4) {
+    if (Math.abs(total) > 4 || Math.abs(p.y - pointer.startCanvasY) > 4) {
       pointer.moved = true;
-      panByPixels(dx * (el.spectrumCanvas.width / el.spectrumCanvas.getBoundingClientRect().width));
+      if (pointer.mode === "pan") {
+        panByPixels(dx * (el.spectrumCanvas.width / el.spectrumCanvas.getBoundingClientRect().width));
+      }
     }
     pointer.lastX = evt.clientX;
   });
   el.spectrumCanvas.addEventListener("pointerup", (evt) => {
-    if (!pointer?.moved) setReticleFromEvent(evt);
+    const activePointer = pointer;
+    if (activePointer) {
+      const p = canvasPos(evt);
+      activePointer.currentCanvasX = p.x;
+      activePointer.currentCanvasY = p.y;
+    }
+    if (!activePointer?.moved) {
+      setReticleFromEvent(evt);
+    } else if (activePointer.mode === "zoom" && !applyZoomSelection(activePointer)) {
+      setReticleFromEvent(evt);
+    }
     try {
       el.spectrumCanvas.releasePointerCapture(evt.pointerId);
     } catch {}
     pointer = null;
+    el.spectrumCanvas.style.cursor = "";
+  });
+  el.spectrumCanvas.addEventListener("pointercancel", (evt) => {
+    try {
+      el.spectrumCanvas.releasePointerCapture(evt.pointerId);
+    } catch {}
+    pointer = null;
+    el.spectrumCanvas.style.cursor = "";
   });
   el.spectrumCanvas.addEventListener("contextmenu", (evt) => {
     evt.preventDefault();
@@ -3829,12 +4321,20 @@
   }
 
   addWheelInputs();
-  updateSpeedSummary();
+  updateCustomSettingsUi();
   updateLobbyMode();
   el.soloMode.addEventListener("click", () => setGameMode("solo"));
   el.multiMode.addEventListener("click", () => setGameMode("multiplayer"));
   el.sandboxMode.addEventListener("click", () => setGameMode("sandbox"));
   el.gameSpeed.addEventListener("change", updateSpeedSummary);
+  el.customSettingsToggle.addEventListener("change", updateCustomSettingsUi);
+  [el.customModemCount, el.customPowerBank, el.customMinBandwidth, el.customMaxBandwidth, el.customTransponderCount].forEach((input) => {
+    input.addEventListener("change", updateCustomSettingsUi);
+    input.addEventListener("input", () => {
+      if (el.customSettingsSummary) el.customSettingsSummary.textContent = customSettingsSummaryText(readCustomSettings());
+      updateSpeedSummary();
+    });
+  });
   el.localStart.addEventListener("click", startGame);
   el.hostNetwork.addEventListener("click", hostNetworkGame);
   el.joinNetwork.addEventListener("click", joinNetworkGame);

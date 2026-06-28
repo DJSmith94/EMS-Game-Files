@@ -24,6 +24,10 @@ Available modulation schemes now run from `BPSK` through `64QAM`; denser constel
 
 Player modems use desired Mbps as the throughput knob. Receivers accept the measured occupied bandwidth, so players still need to calculate or measure the bandwidth produced by their Mbps, modulation, FEC, and waveform choices.
 
+## Custom Settings
+
+Enable `Custom settings` on the start screen to override the mode preset. Custom games can set TX modems per player, total system power bank, minimum and maximum occupied signal bandwidth, and transponder count. Transponders stay 36 MHz wide with 4 MHz guard gaps; each transponder adds 40 MHz to the battle span.
+
 ## Two-Computer Multiplayer
 
 Network play needs the included local server because the two browsers must exchange live game state.
