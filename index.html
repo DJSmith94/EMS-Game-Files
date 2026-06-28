@@ -19,15 +19,15 @@
         </button>
         <button id="multiMode" class="mode-option" type="button" aria-pressed="false">
           <strong>Two Computers</strong>
-          <span>Host a 160 MHz four-transponder room for Player 1, then join from another computer as Player 2.</span>
+          <span>Host a default 160 MHz room for Player 1, then join from another computer as Player 2.</span>
         </button>
         <button id="sandboxMode" class="mode-option" type="button" aria-pressed="false">
           <strong>Sandbox</strong>
-          <span>Open the full 80 MHz analyzer with a randomized signal field and relaxed power limits.</span>
+          <span>Open the default 80 MHz analyzer with a randomized signal field and relaxed power limits.</span>
         </button>
       </div>
       <div class="phase-list">
-        <div><strong>Prep</strong><span>Five minutes to pick your data modem and set your own 36 MHz transponder plan.</span></div>
+        <div><strong>Prep</strong><span>Five minutes to pick your data modem and set your own transponder plan.</span></div>
         <div><strong>Battle</strong><span>The analyzer can expand to the full battle span. The chosen data modem stays selected, but the data RX must be retuned after carrier or format changes.</span></div>
         <div><strong>Scoring</strong><span id="speedSummary">Normal: 2 Gb pseudo file with a 10 minute live cap. Eb/No, FEC loss, and receiver tuning control progress.</span></div>
       </div>
@@ -45,6 +45,30 @@
           <option value="slow">Slow - 6 Gb / 15 min</option>
         </select>
       </label>
+      <section class="custom-settings">
+        <label class="custom-toggle">
+          <input id="customSettingsToggle" type="checkbox" />
+          <span>Custom settings</span>
+        </label>
+        <div id="customSettingsPanel" class="custom-grid" hidden>
+          <label>TX modems / player
+            <input id="customModemCount" type="number" min="1" max="8" step="1" value="4" />
+          </label>
+          <label>Power bank dBm
+            <input id="customPowerBank" type="number" min="-70" max="-24" step="1" value="-48" />
+          </label>
+          <label>Min signal MHz
+            <input id="customMinBandwidth" type="number" min="0.2" max="36" step="0.1" value="0.5" />
+          </label>
+          <label>Max signal MHz
+            <input id="customMaxBandwidth" type="number" min="0.2" max="36" step="0.1" value="24" />
+          </label>
+          <label>Transponders
+            <input id="customTransponderCount" type="number" min="2" max="8" step="1" value="4" />
+          </label>
+        </div>
+        <p id="customSettingsSummary" class="custom-summary">Using the selected mode preset.</p>
+      </section>
       <div id="networkPanel" class="network-panel" hidden>
         <div class="network-actions">
           <button id="hostNetwork" class="join join-alpha" type="button">Host Player 1</button>
@@ -119,19 +143,19 @@
         </div>
         <div class="control">
           <label for="span">Span MHz</label>
-          <input id="span" type="number" min="1" max="160" step="0.5" value="42" />
+          <input id="span" type="number" min="1" max="320" step="0.5" value="160" />
         </div>
         <div class="control">
           <label for="refLevel">Reference dBm</label>
-          <input id="refLevel" type="number" step="1" value="-48" />
+          <input id="refLevel" type="number" step="1" value="0" />
         </div>
         <div class="control">
           <label for="dbPerDiv">Scale</label>
           <select id="dbPerDiv">
             <option value="3">3 dB/div</option>
             <option value="5">5 dB/div</option>
-            <option value="8" selected>8 dB/div</option>
-            <option value="10">10 dB/div</option>
+            <option value="8">8 dB/div</option>
+            <option value="10" selected>10 dB/div</option>
           </select>
         </div>
         <div class="control">
@@ -141,9 +165,9 @@
             <option value="0.003">3 kHz</option>
             <option value="0.01">10 kHz</option>
             <option value="0.03">30 kHz</option>
-            <option value="0.1" selected>100 kHz</option>
+            <option value="0.1">100 kHz</option>
             <option value="0.3">300 kHz</option>
-            <option value="1">1 MHz</option>
+            <option value="1" selected>1 MHz</option>
           </select>
         </div>
         <div class="control">
@@ -154,29 +178,29 @@
             <option value="0.003">3 kHz</option>
             <option value="0.01">10 kHz</option>
             <option value="0.03">30 kHz</option>
-            <option value="0.1" selected>100 kHz</option>
+            <option value="0.1">100 kHz</option>
             <option value="0.3">300 kHz</option>
-            <option value="1">1 MHz</option>
+            <option value="1" selected>1 MHz</option>
           </select>
         </div>
         <div class="control">
           <label for="sweepTime">Sweep</label>
           <select id="sweepTime">
-            <option value="auto" selected>Auto</option>
+            <option value="auto">Auto</option>
             <option value="0.02">20 ms</option>
             <option value="0.05">50 ms</option>
             <option value="0.1">100 ms</option>
             <option value="0.25">250 ms</option>
             <option value="0.5">500 ms</option>
             <option value="1">1 s</option>
-            <option value="2">2 s</option>
+            <option value="2" selected>2 s</option>
           </select>
         </div>
         <div class="control">
           <label for="detector">Detector</label>
           <select id="detector">
-            <option value="rms" selected>RMS</option>
-            <option value="sample">Sample</option>
+            <option value="rms">RMS</option>
+            <option value="sample" selected>Sample</option>
             <option value="positive">Peak +</option>
             <option value="negative">Peak -</option>
           </select>
@@ -184,22 +208,22 @@
         <div class="control">
           <label for="fftPoints">FFT</label>
           <select id="fftPoints">
-            <option value="4096">4k</option>
+            <option value="4096" selected>4k</option>
             <option value="8192">8k</option>
-            <option value="16384" selected>16k</option>
+            <option value="16384">16k</option>
             <option value="32768">32k</option>
             <option value="65536">65k</option>
           </select>
         </div>
         <div class="control">
           <label for="noiseFloor">Noise dBm</label>
-          <input id="noiseFloor" type="number" step="1" value="-92" />
+          <input id="noiseFloor" type="number" step="1" value="-78" />
         </div>
         <div class="control">
           <label for="averaging">Averaging</label>
           <div class="range-wrap">
-            <input id="averaging" type="range" min="0" max="0.96" step="0.02" value="0.24" />
-            <span id="avgVal">24%</span>
+            <input id="averaging" type="range" min="0" max="0.96" step="0.02" value="0" />
+            <span id="avgVal">0%</span>
           </div>
         </div>
 

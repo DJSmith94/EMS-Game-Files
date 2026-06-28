@@ -164,6 +164,52 @@ input:disabled {
   margin: 0 0 14px;
 }
 
+.custom-settings {
+  margin: 0 0 14px;
+  border: 1px solid rgba(49, 56, 56, 0.8);
+  background: var(--panel-3);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.custom-toggle {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--soft);
+  font-weight: 850;
+}
+
+.custom-toggle input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--alpha);
+}
+
+.custom-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.custom-grid label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.custom-summary {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.35;
+  margin: 9px 0 0;
+}
+
 .network-panel {
   margin: 0 0 14px;
   border: 1px solid rgba(49, 56, 56, 0.8);
@@ -407,7 +453,7 @@ h2 {
   display: grid;
   grid-template-columns: 290px minmax(640px, 1fr) minmax(300px, 360px);
   gap: 12px;
-  align-items: start;
+  align-items: stretch;
 }
 
 .analyzer-controls,
@@ -418,8 +464,8 @@ h2 {
 
 .analyzer-controls {
   padding: 12px;
-  align-self: start;
-  max-height: calc(100vh - 154px);
+  align-self: stretch;
+  height: 100%;
   overflow-y: auto;
 }
 
@@ -821,8 +867,8 @@ canvas {
 
 .modems-section {
   padding: 12px;
-  align-self: start;
-  max-height: calc(100vh - 154px);
+  align-self: stretch;
+  height: 100%;
   overflow-y: auto;
 }
 
@@ -999,6 +1045,7 @@ canvas {
   .speed-picker,
   .mode-picker,
   .network-actions,
+  .custom-grid,
   .modem-fields,
   .lobby-actions,
   .iq-card {
