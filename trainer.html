@@ -3,34 +3,38 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>RF Tug of War</title>
+  <title>MD 3 Spectrum Trainer</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
-<body>
+<body data-page="trainer">
   <main id="lobby" class="lobby">
     <section class="lobby-panel">
-      <p class="eyebrow">RF Tug of War</p>
-      <h1>Choose your RF battle</h1>
-      <p class="lobby-copy">Configure your data carrier and data receive modem during prep, then use the spectrum analyzer to find the opposing transponder and build interference signals. First file to complete wins before the live timer expires.</p>
-      <div class="mode-picker" role="group" aria-label="Game mode">
-        <button id="soloMode" class="mode-option active" type="button" aria-pressed="true">
-          <strong>Solo</strong>
-          <span>Play the original game against the AI opponent.</span>
+      <p class="eyebrow">MD 3 Spectrum Trainer</p>
+      <h1>Choose your spectrum exercise</h1>
+      <p class="lobby-copy">Build spectrum analyzer skills first, then move into the RF Tug of War game. These teaching tools use the same Spec-A behavior, traces, markers, receiver logic, and signal math as the game.</p>
+      <div class="mode-picker trainer-mode-picker" role="group" aria-label="Training mode">
+        <button id="sandboxMode" class="mode-option active" type="button" aria-pressed="true">
+          <strong>Spec-A Trainer</strong>
+          <span>Practice with the shared analyzer, markers, bandwidth tools, trace modes, save states, printed traces, and receiver lock workflow.</span>
         </button>
-        <button id="multiMode" class="mode-option" type="button" aria-pressed="false">
-          <strong>Two Computers</strong>
-          <span>Host a default 160 MHz room for Player 1, then join from another computer as Player 2.</span>
+        <button id="trainerSprintMode" class="mode-option" type="button" aria-pressed="false">
+          <strong>Characterization Sprint</strong>
+          <span>Measure center frequency, occupied bandwidth, effective bandwidth, and SNR against the same generated Spec-A environment.</span>
         </button>
-        <button id="sandboxMode" class="mode-option" type="button" aria-pressed="false">
-          <strong>Sandbox</strong>
-          <span>Open the default 80 MHz analyzer with a randomized signal field and relaxed power limits.</span>
+        <button id="trainerChangesMode" class="mode-option disabled" type="button" aria-pressed="false" disabled>
+          <strong>Detect Change & Advanced Characterization</strong>
+          <span></span>
+        </button>
+        <button id="trainerDesignMode" class="mode-option" type="button" aria-pressed="false">
+          <strong>Signal Design Simulator</strong>
+          <span>Find assigned gaps, design one TX signal, and tune the Data RX for either throughput or survival.</span>
+        </button>
+        <button id="gamesLink" class="mode-option games-option" type="button" aria-pressed="false">
+          <strong>Games</strong>
+          <span>Return to the RF Tug of War splash page.</span>
         </button>
       </div>
-      <div class="phase-list">
-        <div><strong>Prep</strong><span>Five minutes to pick your data modem and set your own transponder plan.</span></div>
-        <div><strong>Battle</strong><span>The analyzer can expand to the full battle span. The chosen data modem stays selected, but the data RX must be retuned after carrier or format changes.</span></div>
-        <div><strong>Scoring</strong><span id="speedSummary">Normal: 2 Gb pseudo file with a 10 minute live cap. Eb/No, FEC loss, and receiver tuning control progress.</span></div>
-      </div>
+      <span id="speedSummary" hidden>Trainer mode uses the shared Spec-A backend.</span>
       <label id="difficultyPicker" class="difficulty-picker">AI Difficulty
         <select id="difficulty">
           <option value="easy">Easy</option>
@@ -80,8 +84,7 @@
         <p id="networkStatus" class="network-status">Run the local server, then host or join from two computers on the same network.</p>
       </div>
       <div class="lobby-actions">
-        <button id="localStart" class="join join-alpha" type="button">Start Game</button>
-        <button id="mainMenuLink" class="join join-bravo" type="button">Main Menu</button>
+        <button id="localStart" class="join join-alpha" type="button">Start Spec-A Trainer</button>
       </div>
     </section>
   </main>
@@ -89,7 +92,7 @@
   <div id="game" class="game-shell" hidden>
     <header class="topbar">
       <div class="brand-block">
-        <div class="eyebrow">RF Tug of War</div>
+        <div class="eyebrow">MD 3 Spectrum Trainer</div>
         <h1 id="playerTitle">Player</h1>
       </div>
       <div class="round-strip">
@@ -281,6 +284,51 @@
       </aside>
 
       <section class="display-panel">
+        <section class="trainer-task-card">
+          <div>
+            <div class="panel-title">Training Task</div>
+            <h2 id="taskTitle">Find the Signal</h2>
+            <p id="taskText">Set a marker on the requested signal, then check your answer.</p>
+            <div id="sprintHud" class="trainer-sprint-hud" hidden>
+              <strong id="sprintTimer">15:00</strong>
+              <span id="sprintScore">0/40</span>
+            </div>
+            <div id="designHud" class="trainer-sprint-hud" hidden>
+              <strong id="designScore">0/20</strong>
+              <span id="designProgress">Assignment 1/5</span>
+            </div>
+            <div id="sprintEntryPanel" class="sprint-entry-panel" hidden>
+              <label>Center MHz
+                <input id="sprintCenter" type="number" step="0.001" placeholder="2250.000" />
+              </label>
+              <label>Occupied BW MHz
+                <input id="sprintOccupied" type="number" step="0.001" placeholder="3.200" />
+              </label>
+              <label>3 dB BW MHz
+                <input id="sprintEffective" type="number" step="0.001" placeholder="2.600" />
+              </label>
+              <label>SNR dB
+                <input id="sprintSnr" type="number" step="0.1" placeholder="18.5" />
+              </label>
+              <button id="sprintStart" type="button">Start Timer</button>
+              <button id="sprintSubmit" type="button">Submit</button>
+              <div class="sprint-measure-note">Occupied BW is the full emission through the roll-off edges. 3 dB BW is measured at the half-power points. SNR is peak power minus noise integrated over occupied bandwidth.</div>
+            </div>
+            <div id="taskResult" class="task-result">Start the trainer to generate a signal set.</div>
+          </div>
+          <div class="trainer-task-actions">
+            <div class="trainer-mode-actions">
+              <button id="starterTaskMode" type="button" class="active">Starter</button>
+              <button id="intermediateTaskMode" type="button">Intermediate</button>
+            </div>
+            <button id="newTask" type="button">New Task</button>
+            <button id="checkTask" type="button">Check Marker</button>
+            <button id="designSubmit" type="button" hidden>Score Design</button>
+            <button id="designNext" type="button" hidden>Next Assignment</button>
+            <button id="newSignalSet" type="button">New Signal Set</button>
+            <button id="trainerHome" type="button">Home</button>
+          </div>
+        </section>
         <div class="instrument-top">
           <div class="readouts">
             <div class="readout"><span>View</span><strong id="viewReadout">-</strong></div>
@@ -301,30 +349,29 @@
           <canvas id="spectrumCanvas" width="1280" height="430"></canvas>
           <canvas id="waterfallCanvas" width="1280" height="160"></canvas>
         </div>
-        <div class="game-modem-row">
+        <div class="design-modem-row">
           <section class="modems-section">
             <div class="section-head">
-              <h2>TX Modems</h2>
+              <h2>TX Modem</h2>
               <div id="lockNotice">Data modem can be changed during prep.</div>
             </div>
             <div id="modems" class="modem-grid"></div>
           </section>
-          <div class="rx-stack">
-            <section class="rx-panel">
-              <div class="rx-panel-head">
-                <h2>Data Receive Modem</h2>
-              </div>
-              <div id="dataRxModem"></div>
-            </section>
-            <section class="rx-panel">
-              <div class="rx-panel-head">
-                <h2>RX Search Modems</h2>
-              </div>
-              <div id="rxModems" class="rx-grid"></div>
-            </section>
-          </div>
+          <section class="rx-panel">
+            <div class="rx-panel-head">
+              <h2>Data Receive Modem</h2>
+            </div>
+            <div id="dataRxModem"></div>
+          </section>
         </div>
+        <section class="rx-panel">
+          <div class="rx-panel-head">
+            <h2>RX Search Modems</h2>
+          </div>
+          <div id="rxModems" class="rx-grid"></div>
+        </section>
       </section>
+
     </main>
   </div>
 
@@ -335,6 +382,12 @@
         <div class="panel-title">I/Q Demod</div>
         <h2 id="iqModalTitle">Modem</h2>
         <div id="iqReadout">Waiting for data carrier.</div>
+        <div id="modulationQuiz" class="modulation-quiz" hidden>
+          <button type="button" data-mod-choice="BPSK">BPSK</button>
+          <button type="button" data-mod-choice="QPSK">QPSK</button>
+          <button type="button" data-mod-choice="8PSK">8PSK</button>
+          <button type="button" data-mod-choice="16QAM">16QAM</button>
+        </div>
         <button id="closeIq" type="button">Close</button>
       </div>
     </section>
