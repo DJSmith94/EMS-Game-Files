@@ -95,7 +95,7 @@ input:disabled {
 
 .mode-picker {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: 10px;
   margin: 0 0 14px;
 }
@@ -125,6 +125,205 @@ input:disabled {
 .mode-option.active {
   border-color: rgba(101, 230, 173, 0.72);
   box-shadow: inset 0 0 0 1px rgba(101, 230, 173, 0.18);
+}
+
+.mode-option.disabled,
+.mode-option:disabled {
+  opacity: 0.54;
+  filter: grayscale(0.3);
+}
+
+body[data-page="trainer"] .games-option {
+  grid-column: 1 / -1;
+  min-height: 78px;
+}
+
+body[data-page="trainer"] .mode-picker {
+  grid-template-columns: 1fr;
+}
+
+body[data-page="trainer"] .phase-list,
+body[data-page="trainer"] .custom-settings,
+body[data-page="trainer"] #difficultyPicker,
+body[data-page="trainer"] #speedPicker,
+body[data-page="trainer"] #networkPanel {
+  display: none;
+}
+
+body[data-page="trainer"] .lobby-panel {
+  max-width: 760px;
+}
+
+body[data-page="trainer"] .topbar,
+body[data-page="trainer"] .scoreboard,
+body[data-page="trainer"] .modems-section,
+body[data-page="trainer"] .rx-panel,
+body[data-page="trainer"] .readout:nth-child(n+4):nth-child(-n+9),
+body[data-page="trainer"] .band-map {
+  display: none;
+}
+
+body[data-page="trainer"] .workspace {
+  grid-template-columns: 290px minmax(640px, 1fr);
+  align-items: start;
+}
+
+body[data-page="trainer"] .display-panel {
+  display: grid;
+  gap: 12px;
+}
+
+body[data-page="trainer"] .design-modem-row {
+  display: none;
+}
+
+body[data-page="trainer"].signal-design-mode .workspace {
+  grid-template-columns: 290px minmax(640px, 1fr);
+}
+
+body[data-page="trainer"].signal-design-mode .design-modem-row {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(280px, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+body[data-page="trainer"].signal-design-mode .design-modem-row .modems-section,
+body[data-page="trainer"].signal-design-mode .design-modem-row .rx-panel {
+  display: block;
+}
+
+body[data-page="trainer"].signal-design-mode .design-modem-row .modem-card:nth-child(n+2) {
+  display: none;
+}
+
+body[data-page="trainer"].signal-design-mode .display-panel > .rx-panel {
+  display: none;
+}
+
+body[data-page="trainer"].signal-design-mode #lockNotice,
+body[data-page="trainer"].signal-design-mode .data-button {
+  display: none;
+}
+
+.trainer-task-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  border: 1px solid rgba(49, 56, 56, 0.85);
+  border-radius: 8px;
+  padding: 12px;
+  background: rgba(12, 16, 17, 0.78);
+}
+
+.trainer-task-card h2 {
+  margin: 0 0 6px;
+  font-size: 18px;
+}
+
+.trainer-task-card p {
+  margin: 0;
+  color: var(--soft);
+  line-height: 1.4;
+}
+
+.trainer-task-actions {
+  display: grid;
+  gap: 8px;
+  min-width: 150px;
+}
+
+.trainer-mode-actions,
+.modulation-quiz {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.trainer-mode-actions button.active,
+.modulation-quiz button.selected {
+  border-color: rgba(101, 230, 173, 0.74);
+  color: var(--alpha);
+}
+
+.modulation-quiz {
+  margin: 12px 0;
+}
+
+.task-result {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.task-result.good {
+  color: var(--alpha);
+}
+
+.task-result.bad {
+  color: var(--bravo);
+}
+
+.trainer-sprint-hud {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-top: 10px;
+  font-weight: 800;
+}
+
+.trainer-sprint-hud strong,
+.trainer-sprint-hud span {
+  border: 1px solid rgba(82, 96, 94, 0.82);
+  border-radius: 6px;
+  padding: 6px 9px;
+  background: rgba(5, 8, 9, 0.72);
+}
+
+.trainer-sprint-hud strong {
+  color: var(--alpha);
+  min-width: 64px;
+  text-align: center;
+}
+
+.trainer-sprint-hud span {
+  color: var(--text);
+}
+
+.sprint-entry-panel {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(112px, 1fr)) auto auto;
+  gap: 8px;
+  align-items: end;
+  margin-top: 12px;
+}
+
+.sprint-entry-panel label {
+  display: grid;
+  gap: 4px;
+  color: var(--soft);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.sprint-entry-panel input {
+  min-width: 0;
+}
+
+.sprint-entry-panel button {
+  min-height: 42px;
+}
+
+.sprint-measure-note {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
 }
 
 .phase-list {
@@ -336,7 +535,7 @@ h2 {
 .round-strip {
   border-radius: 8px;
   display: grid;
-  grid-template-columns: 0.75fr 0.75fr 1.4fr;
+  grid-template-columns: 0.7fr 0.7fr 1.25fr 1.35fr;
   overflow: hidden;
 }
 
@@ -368,6 +567,15 @@ h2 {
   font-size: 20px;
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
+}
+
+#powerBudgetReadout {
+  color: var(--good);
+  font-size: 18px;
+}
+
+#powerBudgetReadout.over {
+  color: var(--bad);
 }
 
 .reset-button {
@@ -410,7 +618,7 @@ h2 {
 
 .score-row {
   display: grid;
-  grid-template-columns: minmax(118px, 160px) minmax(120px, 1fr) 52px;
+  grid-template-columns: minmax(118px, 160px) minmax(120px, 1fr) 52px minmax(150px, 220px);
   gap: 10px;
   align-items: center;
   min-width: 0;
@@ -447,11 +655,35 @@ h2 {
   font-variant-numeric: tabular-nums;
 }
 
+.point-readout {
+  min-width: 0;
+  padding-left: 10px;
+  border-left: 1px solid rgba(82, 96, 94, 0.72);
+}
+
+.point-total {
+  display: block;
+  color: #f4f0dc;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.point-event {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .workspace {
   max-width: 1760px;
   margin: 0 auto;
   display: grid;
-  grid-template-columns: 290px minmax(640px, 1fr) minmax(300px, 360px);
+  grid-template-columns: 290px minmax(640px, 1fr);
   gap: 12px;
   align-items: stretch;
 }
@@ -599,7 +831,9 @@ input[type="range"] {
 .marker-menu {
   position: fixed;
   z-index: 40;
-  width: 190px;
+  width: 218px;
+  max-height: min(520px, calc(100vh - 18px));
+  overflow-y: auto;
   border: 1px solid rgba(116, 128, 125, 0.55);
   border-radius: 8px;
   background: rgba(13, 16, 17, 0.98);
@@ -775,6 +1009,41 @@ canvas {
   background: rgba(13, 16, 17, 0.88);
   border-radius: 8px;
   padding: 10px;
+}
+
+.game-modem-row {
+  display: grid;
+  grid-template-columns: minmax(520px, 1.2fr) minmax(360px, 0.8fr);
+  gap: 12px;
+  align-items: start;
+  margin-top: 10px;
+}
+
+.game-modem-row .modems-section,
+.game-modem-row .rx-panel {
+  margin-top: 0;
+}
+
+.game-modem-row .modems-section {
+  height: auto;
+  overflow-y: visible;
+}
+
+.game-modem-row .modem-grid {
+  grid-template-columns: repeat(2, minmax(250px, 1fr));
+}
+
+.rx-stack {
+  display: grid;
+  gap: 10px;
+}
+
+.game-modem-row .rx-grid {
+  grid-template-columns: 1fr;
+}
+
+.game-modem-row .data-rx-fields {
+  grid-template-columns: repeat(2, minmax(120px, 1fr));
 }
 
 .rx-panel-head {
@@ -956,7 +1225,7 @@ canvas {
 
 .modem-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
   margin-top: 9px;
 }
@@ -967,6 +1236,7 @@ canvas {
   background: #030504;
   border-radius: 8px;
   padding: 8px;
+  max-width: 278px;
 }
 
 .iq-inline canvas {
@@ -974,6 +1244,11 @@ canvas {
   height: 180px;
   border: 1px solid #2d3635;
   border-radius: 8px;
+}
+
+.data-rx-card .iq-inline {
+  width: 278px;
+  max-width: 100%;
 }
 
 .iq-inline-readout {
@@ -986,6 +1261,11 @@ canvas {
 .tx-button.on {
   border-color: rgba(101, 230, 173, 0.72);
   color: var(--alpha);
+}
+
+.mod-button.on {
+  border-color: rgba(111, 194, 255, 0.74);
+  color: var(--cyan);
 }
 
 .data-button.selected {
@@ -1029,8 +1309,17 @@ canvas {
     grid-template-columns: repeat(2, minmax(240px, 1fr));
   }
 
+  .game-modem-row {
+    grid-template-columns: 1fr;
+  }
+
   .modems-section {
     max-height: none;
+  }
+
+  body[data-page="trainer"].signal-design-mode .workspace,
+  body[data-page="trainer"].signal-design-mode .design-modem-row {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -1052,6 +1341,13 @@ canvas {
     grid-template-columns: 1fr;
   }
 
+  .point-readout {
+    border-left: 0;
+    border-top: 1px solid rgba(82, 96, 94, 0.72);
+    padding-left: 0;
+    padding-top: 8px;
+  }
+
   .modem-grid {
     grid-template-columns: 1fr;
   }
@@ -1061,6 +1357,14 @@ canvas {
   }
 
   .data-rx-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .trainer-task-card {
+    grid-template-columns: 1fr;
+  }
+
+  .sprint-entry-panel {
     grid-template-columns: 1fr;
   }
 
